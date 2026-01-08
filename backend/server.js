@@ -1,14 +1,14 @@
 const dns = require('dns');
-dns.setDefaultResultOrder('ipv4first'); // Fix lỗi kết nối Supabase trên Render
+dns.setDefaultResultOrder('ipv4first');
 // --------------------------------------------------
 require('dotenv').config();
 const express = require('express');
 const cors = require('cors');
 const { Pool } = require('pg');
-const XLSX = require('xlsx');
 const ExcelJS = require('exceljs');
 const fs = require('fs');
 const multer = require('multer');
+const XLSX = require('xlsx');
 
 const app = express();
 const upload = multer({ dest: 'uploads/' });
@@ -21,7 +21,6 @@ let pool;
 const initPool = async () => {
     try {
         let connectionString = process.env.DATABASE_URL;
-        // Fix lỗi kết nối trên một số mạng Cloud
         if (!connectionString.includes('family=')) {
             const separator = connectionString.includes('?') ? '&' : '?';
             connectionString = `${connectionString}${separator}family=4`;
@@ -33,7 +32,7 @@ const initPool = async () => {
             connectionTimeoutMillis: 15000,
         });
         const client = await pool.connect();
-        await client.query('SELECT NOW()'); // Test kết nối
+        await client.query('SELECT NOW()');
         client.release();
         console.log('✅ Đã kết nối PostgreSQL thành công!');
         await initDB();
@@ -59,24 +58,7 @@ const initDB = async () => {
     catch (err) { console.error("❌ Lỗi tạo bảng:", err); }
 };
 
-// --- 2. HÀM FORMAT NGÀY GIỜ VIỆT NAM (10h44 08/01/2026) ---
-const formatDateTimeVN = (isoString) => {
-    if (!isoString) return "";
-    const d = new Date(isoString);
-    if (isNaN(d.getTime())) return isoString;
-
-    // Server Render là UTC+0, cộng thêm 8 tiếng để ra giờ VN
-    const vnTime = new Date(d.getTime() + 8 * 60 * 60 * 1000); 
-
-    const hh = String(vnTime.getUTCHours()).padStart(2, '0');
-    const mm = String(vnTime.getUTCMinutes()).padStart(2, '0');
-    const DD = String(vnTime.getUTCDate()).padStart(2, '0');
-    const MM = String(vnTime.getUTCMonth() + 1).padStart(2, '0');
-    const YYYY = vnTime.getUTCFullYear();
-    
-    return `${hh}h${mm} ${DD}/${MM}/${YYYY}`;
-};
-
+// --- HELPER FUNCTIONS ---
 const excelDateToJSDate = (serial) => {
     if (!serial) return "";
     if (typeof serial === 'number' && serial > 25569 && serial < 2958465) {
@@ -100,15 +82,13 @@ const excelDateToJSDate = (serial) => {
     return String(serial).trim();
 };
 
-const toStr = (val) => {
-    if (val === null || val === undefined) return "";
-    return String(val).trim().toUpperCase();
-};
+const toStr = (val) => { if (val === null || val === undefined) return ""; return String(val).trim().toUpperCase(); };
 
 const normalizeData = (obj) => {
     const cleanObj = {};
     Object.keys(obj).sort().forEach(key => {
-        if (['STT', 'stt', 'id', 'workshop', 'lot_number', 'status', 'created_at', 'updated_at'].includes(key)) return;
+        // QUAN TRỌNG: Loại bỏ hoàn toàn các trường liên quan đến ngày cập nhật khỏi việc so sánh
+        if (['STT', 'stt', 'id', 'workshop', 'lot_number', 'status', 'created_at', 'updated_at', 'SKIP_UPDATE', 'Ngày Cập Nhật'].includes(key)) return;
         if (key.startsWith('Hồi ẩm (')) return;
         let val = toStr(obj[key]);
         if (val !== "") cleanObj[key] = val;
@@ -121,13 +101,11 @@ const isSameIdentity = (obj1, obj2) => {
     const keys1 = Object.keys(obj1).filter(k => k.startsWith('COT_'));
     const keys2 = Object.keys(obj2).filter(k => k.startsWith('COT_'));
     const allCotKeys = new Set([...keys1, ...keys2]);
-    for (let key of allCotKeys) {
-        if (toStr(obj1[key]) !== toStr(obj2[key])) return false;
-    }
+    for (let key of allCotKeys) { if (toStr(obj1[key]) !== toStr(obj2[key])) return false; }
     return true;
 };
 
-// --- 3. LOGIC IMPORT (CHỈ UPDATE KHI CÓ THAY ĐỔI) ---
+// --- LOGIC XỬ LÝ (QUAN TRỌNG NHẤT) ---
 const processImportLogic = async (workshop, rows) => {
     let inserted = 0, skipped = 0, updated = 0;
     const client = await pool.connect();
@@ -135,27 +113,41 @@ const processImportLogic = async (workshop, rows) => {
         await client.query('BEGIN');
         for (const item of rows) {
             const { lot_number, data } = item;
-            delete data['STT']; delete data['stt'];
-            const newSig = normalizeData(data);
+            
+            // Xóa rác trước khi xử lý
+            delete data['STT']; delete data['stt']; delete data['SKIP_UPDATE']; delete data['updated_at'];
+
+            const newSig = normalizeData(data); // Tạo "chữ ký" dữ liệu mới (không chứa ngày giờ)
             const newDataFull = JSON.stringify(data);
+            
             const res = await client.query("SELECT id, data FROM orders WHERE workshop = $1 AND lot_number = $2", [workshop, lot_number]);
             const existingRecords = res.rows;
             let handled = false;
+
             for (const record of existingRecords) {
                 const oldData = JSON.parse(record.data);
+                
+                // Kiểm tra xem có phải cùng 1 đơn hàng không (dựa vào Sản phẩm + COT_)
                 if (isSameIdentity(oldData, data)) {
-                    const oldSig = normalizeData(oldData);
+                    const oldSig = normalizeData(oldData); // Tạo "chữ ký" dữ liệu cũ
+                    
                     if (oldSig === newSig) { 
-                        skipped++; // Dữ liệu giống hệt -> Giữ nguyên (Ngày cập nhật KHÔNG đổi)
+                        // -> Dữ liệu GIỐNG HỆT nhau -> Bỏ qua (SKIP)
+                        // -> KHÔNG chạy lệnh UPDATE -> Ngày cập nhật trong DB được GIỮ NGUYÊN
+                        skipped++; 
                     } else { 
-                        // Dữ liệu khác -> Update -> Ngày cập nhật đổi thành NOW()
+                        // -> Dữ liệu KHÁC nhau -> Cập nhật (UPDATE)
+                        // -> Hệ thống tự set updated_at = NOW()
                         await client.query("UPDATE orders SET data = $1, updated_at = NOW() WHERE id = $2", [newDataFull, record.id]); 
                         updated++; 
                     }
                     handled = true; break;
                 }
             }
+            
             if (!handled) {
+                // -> Không tìm thấy -> Thêm mới (INSERT)
+                // -> updated_at tự động là NOW()
                 await client.query("INSERT INTO orders (workshop, lot_number, data, status) VALUES ($1, $2, $3, 'ACTIVE')", [workshop, lot_number, newDataFull]);
                 inserted++;
             }
@@ -193,6 +185,7 @@ app.put('/api/orders/:id', async (req, res) => {
     const { id } = req.params;
     const { id: _id, workshop, lot_number, status, created_at, updated_at, ...excelData } = req.body;
     try {
+        // Khi sửa thủ công trên web -> Cũng update ngày giờ hiện tại
         await pool.query('UPDATE orders SET data = $1, updated_at = NOW() WHERE id = $2', [JSON.stringify(excelData), id]);
         res.json({ success: true });
     } catch (e) { res.status(500).json({ error: e.message }); }
@@ -208,24 +201,22 @@ app.patch('/api/orders/:id/status', async (req, res) => {
     catch (e) { res.status(500).json({ error: e.message }); }
 });
 
-// --- 4. API EXPORT (ĐÃ ĐỒNG BỘ VỚI App.js) ---
+// --- API EXPORT (ĐÃ XÓA CỘT NGÀY CẬP NHẬT) ---
 app.get('/api/export', async (req, res) => {
     try {
         const { workshop, status } = req.query;
         const currentWorkshop = workshop || 'AA';
-        const result = await pool.query(`SELECT data, lot_number, updated_at FROM orders WHERE workshop = $1 AND status = $2`, [currentWorkshop, status]);
+        const result = await pool.query(`SELECT data, lot_number FROM orders WHERE workshop = $1 AND status = $2`, [currentWorkshop, status]);
         
         const jsonData = result.rows.map((r, index) => {
             const parsed = JSON.parse(r.data || '{}');
             delete parsed['STT']; delete parsed['stt'];
             
-            // Format ngày giờ Việt Nam
-            const formattedUpdate = formatDateTimeVN(r.updated_at);
+            // QUAN TRỌNG: Không map cột updated_at vào đây nữa
             
             return { 
                 "STT": index + 1, 
                 "SỐ LÔ": r.lot_number, 
-                "updated_at": formattedUpdate,
                 ...parsed 
             };
         });
@@ -233,16 +224,15 @@ app.get('/api/export', async (req, res) => {
         const wb = new ExcelJS.Workbook();
         const worksheet = wb.addWorksheet('Data');
 
-        // --- DANH SÁCH CỘT CHUẨN (Khớp với App.js) ---
         const COLUMNS_CONFIG = {
-            'AA': ["STT", "MÀU", "GHI CHÚ", "HỒI ẨM", "NGÀY XUỐNG ĐƠN", "SẢN PHẨM", "SỐ LÔ", "CHI SỐ", "SỐ LƯỢNG", "BẮT ĐẦU", "KẾT THÚC", "THAY ĐỔI", "SO MÀU", "ghi chú", "ghi chú (1)", "updated_at"],
-            'AB': ["STT", "MÀU", "GHI CHÚ", "HỒI ẨM", "NGÀY XUỐNG ĐƠN", "SẢN PHẨM", "SỐ LÔ", "CHI SỐ", "SỐ LƯỢNG", "BẮT ĐẦU", "KẾT THÚC", "THAY ĐỔI", "SO MÀU", "ghi chú", "ghi chú (1)", "updated_at"],
-            'OE': ["STT", "MÀU", "GHI CHÚ", "HỒI ẨM", "NGÀY XUỐNG ĐƠN", "SẢN PHẨM", "SỐ LÔ", "CHI SỐ", "SỐ LƯỢNG", "BẮT ĐẦU", "KẾT THÚC", "FU CUNG CÚI", "THỰC TẾ HOÀN THÀNH", "SO MÀU", "ghi chú", "ghi chú (1)", "updated_at"]
+            'AA': ["STT", "MÀU", "GHI CHÚ", "HỒI ẨM", "NGÀY XUỐNG ĐƠN", "SẢN PHẨM", "SỐ LÔ", "CHI SỐ", "SỐ LƯỢNG", "BẮT ĐẦU", "KẾT THÚC", "THAY ĐỔI", "SO MÀU", "ghi chú", "ghi chú (1)"],
+            'AB': ["STT", "MÀU", "GHI CHÚ", "HỒI ẨM", "NGÀY XUỐNG ĐƠN", "SẢN PHẨM", "SỐ LÔ", "CHI SỐ", "SỐ LƯỢNG", "BẮT ĐẦU", "KẾT THÚC", "THAY ĐỔI", "SO MÀU", "ghi chú", "ghi chú (1)"],
+            'OE': ["STT", "MÀU", "GHI CHÚ", "HỒI ẨM", "NGÀY XUỐNG ĐƠN", "SẢN PHẨM", "SỐ LÔ", "CHI SỐ", "SỐ LƯỢNG", "BẮT ĐẦU", "KẾT THÚC", "FU CUNG CÚI", "THỰC TẾ HOÀN THÀNH", "SO MÀU", "ghi chú", "ghi chú (1)"]
         };
+        // Đã xóa "updated_at" khỏi danh sách config ở trên
 
         const targetOrder = COLUMNS_CONFIG[currentWorkshop] || COLUMNS_CONFIG['AA'];
 
-        // Map tên Header tiếng Việt
         const HEADER_MAP = {
             "GHI CHÚ": "Ghi chú 1", "ghi chú": "Ghi chú 2", "ghi chú (1)": "Ghi chú 3",
             "NGÀY XUỐNG ĐƠN": "Ngày xuống đơn", "SỐ LƯỢNG": "Số Lượng",
@@ -255,8 +245,6 @@ app.get('/api/export', async (req, res) => {
         jsonData.forEach(item => Object.keys(item).forEach(k => allKeys.add(k)));
         
         const sortedKeys = Array.from(allKeys).sort((a, b) => {
-            // Logic sắp xếp ưu tiên theo danh sách targetOrder
-            // Cần so sánh cả key thường và key IN HOA để đảm bảo khớp
             const indexA = targetOrder.findIndex(key => key === a || key === a.toUpperCase());
             const indexB = targetOrder.findIndex(key => key === b || key === b.toUpperCase());
             
@@ -264,7 +252,6 @@ app.get('/api/export', async (req, res) => {
             if (indexA !== -1) return -1; 
             if (indexB !== -1) return 1;
             
-            // Các cột COT_ sắp xếp ở cuối
             const isCotA = a.startsWith('COT_');
             const isCotB = b.startsWith('COT_');
             if (isCotA && isCotB) return (parseInt(a.replace('COT_', '') || 0) - parseInt(b.replace('COT_', '') || 0));
@@ -277,22 +264,15 @@ app.get('/api/export', async (req, res) => {
         worksheet.columns = sortedKeys.map(key => ({ header: HEADER_MAP[key] || key, key: key }));
         worksheet.addRows(jsonData);
 
-        // Style: Font Times New Roman, Căn giữa
         const fontStyle = { name: 'Times New Roman', size: 12 };
         const borderStyle = { top: { style: 'thin' }, left: { style: 'thin' }, bottom: { style: 'thin' }, right: { style: 'thin' } };
         const alignStyle = { vertical: 'middle', horizontal: 'center', wrapText: true }; 
 
         worksheet.eachRow((row, rowNumber) => {
-            row.eachCell((cell) => {
-                cell.font = fontStyle; cell.border = borderStyle; cell.alignment = alignStyle;
-            });
-            if (rowNumber === 1) { // Header
+            row.eachCell((cell) => { cell.font = fontStyle; cell.border = borderStyle; cell.alignment = alignStyle; });
+            if (rowNumber === 1) { 
                 row.height = 30;
-                row.eachCell((cell) => {
-                    cell.font = { ...fontStyle, bold: true, color: { argb: 'FFFFFFFF' } };
-                    cell.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FF1F4E78' } };
-                    cell.alignment = { ...alignStyle, horizontal: 'center' };
-                });
+                row.eachCell((cell) => { cell.font = { ...fontStyle, bold: true, color: { argb: 'FFFFFFFF' } }; cell.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FF1F4E78' } }; cell.alignment = { ...alignStyle, horizontal: 'center' }; });
             }
         });
         
@@ -303,99 +283,115 @@ app.get('/api/export', async (req, res) => {
         });
 
         const buffer = await wb.xlsx.writeBuffer();
-        const dateStr = new Date().toLocaleDateString('en-GB', { day: '2-digit', month: '2-digit' }).replace('/', '');
-        res.setHeader('Content-Disposition', `attachment; filename="${workshop}_${dateStr}.xlsx"`);
+        res.setHeader('Content-Disposition', `attachment; filename="${workshop}_Export.xlsx"`);
         res.setHeader('Content-Type', 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet');
         res.send(buffer);
     } catch (e) { console.error(e); res.status(500).send(e.message); }
 });
 
-// --- IMPORT (FIX MAPPING SỐ LÔ & GHI CHÚ) ---
+// --- API IMPORT (VẪN GIỮ LOGIC BỎ QUA CỘT CẬP NHẬT ĐỂ AN TOÀN) ---
 app.post('/api/import', upload.single('file'), async (req, res) => {
     if (!req.file) return res.status(400).send("No file.");
     const filePath = req.file.path;
     try {
-        const workshopType = req.query.workshop || 'AA';
-        const isForce = req.query.force === 'true';
         const workbook = XLSX.readFile(filePath);
-        const sheetName = workbook.SheetNames[0];
-        const aoa = XLSX.utils.sheet_to_json(workbook.Sheets[sheetName], { header: 1, defval: "" });
-        
-        let headerIdx = -1;
-        for (let i = 0; i < Math.min(aoa.length, 30); i++) { 
-            if (JSON.stringify(aoa[i]).toUpperCase().includes('SỐ LÔ')) { headerIdx = i; break; } 
-        }
-        if (headerIdx === -1) { fs.unlinkSync(filePath); return res.status(400).json({ error: "Lỗi file: Không tìm thấy cột SỐ LÔ" }); }
-        
-        const rawHeaders = aoa[headerIdx];
-        if (!isForce) {
-            const headerStr = JSON.stringify(rawHeaders).toUpperCase();
-            const isOESignature = headerStr.includes("FU CUNG") || headerStr.includes("THỰC TẾ") || headerStr.includes("THUC TE");
-            if (workshopType === 'OE' && !isOESignature) { fs.unlinkSync(filePath); return res.json({ warning: true, message: "Cảnh báo: Bạn đang ở OE nhưng file thiếu cột đặc thù." }); }
-            if (workshopType !== 'OE' && isOESignature) { fs.unlinkSync(filePath); return res.json({ warning: true, message: `Cảnh báo: Bạn đang ở ${workshopType} nhưng file có cột OE.` }); }
-        }
-        
-        const mappedHeaders = [];
-        const nameCount = {};
-        let noteCounter = 0;
-        
-        rawHeaders.forEach((h, index) => {
-            let name = (h && String(h).trim() !== '') ? String(h).trim() : '';
-            const upperName = name.toUpperCase();
-            
-            // --- MAPPING CHUẨN HÓA IN HOA (ĐỒNG BỘ APP.JS) ---
-            if (upperName.includes('SỐ LÔ')) name = 'SỐ LÔ'; // Sửa thành SỐ LÔ
-            else if (upperName.includes('SẢN PHẨM')) name = 'SẢN PHẨM';
-            else if (upperName.includes('MÀU') && !upperName.includes('SO')) name = 'MÀU';
-            else if (upperName.includes('SO MÀU')) name = 'SO MÀU';
-            else if (upperName.includes('CHI SỐ')) name = 'CHI SỐ';
-            else if (upperName.includes('SỐ LƯỢNG')) name = 'SỐ LƯỢNG';
-            else if (upperName.includes('BẮT ĐẦU')) name = 'BẮT ĐẦU';
-            else if (upperName.includes('KẾT THÚC')) name = 'KẾT THÚC';
-            else if (upperName.includes('THAY ĐỔI')) name = 'THAY ĐỔI';
-            else if (upperName.includes('HỒI ẨM') || upperName.includes('MOISTURE')) name = 'HỒI ẨM';
-            else if (upperName.includes('NGÀY') && upperName.includes('ĐƠN')) name = 'NGÀY XUỐNG ĐƠN';
-            else if (upperName.includes('FU CUNG')) name = 'FU CUNG CÚI';
-            else if (upperName.includes('THỰC TẾ')) name = 'THỰC TẾ HOÀN THÀNH';
-            
-            // --- LOGIC GHI CHÚ CHUẨN ---
-            else if (upperName.includes('GHI CHÚ')) {
-                noteCounter++;
-                if (noteCounter === 1) name = 'GHI CHÚ';
-                else if (noteCounter === 2) name = 'ghi chú';
-                else if (noteCounter === 3) name = 'ghi chú (1)';
-                else name = `GHI CHÚ (${noteCounter})`;
-            }
-            if (name === '' || name.startsWith('COT_')) { if (name === '') name = `COT_${index}`; }
-            
-            const FIXED = ['GHI CHÚ', 'ghi chú', 'ghi chú (1)'];
-            if (!FIXED.includes(name)) {
-                if (nameCount[name]) { nameCount[name]++; name = `${name} (${nameCount[name]})`; } else { nameCount[name] = 1; }
-            }
-            mappedHeaders.push(name);
-        });
+        const sheetNames = workbook.SheetNames;
+        let totalInserted = 0; let totalUpdated = 0; let totalSkipped = 0; let processedSheets = [];
 
-        const lotColIndex = mappedHeaders.findIndex(h => h === 'SỐ LÔ');
-        const processedRows = [];
-        for (let i = headerIdx + 1; i < aoa.length; i++) {
-            const rowData = aoa[i];
-            const lotVal = rowData[lotColIndex];
-            if (!lotVal || String(lotVal).trim() === '') continue;
-            const rowObject = {};
-            mappedHeaders.forEach((header, index) => {
-                const val = rowData[index];
-                if (header.startsWith('COT_') && (val === '' || val == null)) return;
-                const isDateCol = /NGÀY|DATE|BẮT ĐẦU|KẾT THÚC|GIAO|THỜI GIAN/i.test(header);
-                const isSerialNum = typeof val === 'number' && val > 25569 && val < 2958465;
-                if (val && (isDateCol || isSerialNum)) { rowObject[header] = excelDateToJSDate(val); }
-                else { rowObject[header] = typeof val === 'boolean' ? String(val).toUpperCase() : val; }
+        console.log(`📂 Bắt đầu xử lý file với ${sheetNames.length} sheets...`);
+
+        for (const sheetName of sheetNames) {
+            const aoa = XLSX.utils.sheet_to_json(workbook.Sheets[sheetName], { header: 1, defval: "" });
+            let headerIdx = -1;
+            for (let i = 0; i < Math.min(aoa.length, 50); i++) { 
+                if (JSON.stringify(aoa[i]).toUpperCase().includes('SỐ LÔ')) { headerIdx = i; break; } 
+            }
+            if (headerIdx === -1) continue;
+
+            let currentWorkshop = 'AA';
+            const nameUp = sheetName.toUpperCase();
+            if (nameUp.includes('AA')) currentWorkshop = 'AA';
+            else if (nameUp.includes('AB')) currentWorkshop = 'AB';
+            else if (nameUp.includes('OE')) currentWorkshop = 'OE';
+            else currentWorkshop = sheetName.trim();
+
+            const rawHeaders = aoa[headerIdx];
+            const mappedHeaders = [];
+            const nameCount = {};
+            let noteCounter = 0;
+
+            rawHeaders.forEach((h, index) => {
+                let name = (h && String(h).trim() !== '') ? String(h).trim() : '';
+                const upperName = name.toUpperCase();
+                
+                if (upperName.includes('SỐ LÔ')) name = 'SỐ LÔ';
+                else if (upperName.includes('SẢN PHẨM')) name = 'SẢN PHẨM';
+                else if (upperName.includes('MÀU') && !upperName.includes('SO')) name = 'MÀU';
+                else if (upperName.includes('SO MÀU')) name = 'SO MÀU';
+                else if (upperName.includes('CHI SỐ')) name = 'CHI SỐ';
+                else if (upperName.includes('SỐ LƯỢNG')) name = 'SỐ LƯỢNG';
+                else if (upperName.includes('BẮT ĐẦU')) name = 'BẮT ĐẦU';
+                else if (upperName.includes('KẾT THÚC')) name = 'KẾT THÚC';
+                else if (upperName.includes('THAY ĐỔI')) name = 'THAY ĐỔI';
+                else if (upperName.includes('HỒI ẨM') || upperName.includes('MOISTURE')) name = 'HỒI ẨM';
+                else if (upperName.includes('NGÀY') && upperName.includes('ĐƠN')) name = 'NGÀY XUỐNG ĐƠN';
+                else if (upperName.includes('FU CUNG')) name = 'FU CUNG CÚI';
+                else if (upperName.includes('THỰC TẾ')) name = 'THỰC TẾ HOÀN THÀNH';
+                else if (upperName.includes('GHI CHÚ')) {
+                    noteCounter++;
+                    if (noteCounter === 1) name = 'GHI CHÚ';
+                    else if (noteCounter === 2) name = 'ghi chú';
+                    else if (noteCounter === 3) name = 'ghi chú (1)';
+                    else name = `GHI CHÚ (${noteCounter})`;
+                }
+                // Nếu file Excel cũ vẫn còn cột cập nhật thì đánh dấu để bỏ qua
+                else if (upperName.includes('CẬP NHẬT') || upperName.includes('UPDATED')) {
+                    name = 'SKIP_UPDATE';
+                }
+
+                if (name === '' || name.startsWith('COT_')) { if (name === '') name = `COT_${index}`; }
+                if (!['GHI CHÚ', 'ghi chú', 'ghi chú (1)', 'SKIP_UPDATE'].includes(name)) {
+                    if (nameCount[name]) { nameCount[name]++; name = `${name} (${nameCount[name]})`; } else { nameCount[name] = 1; }
+                }
+                mappedHeaders.push(name);
             });
-            processedRows.push({ workshop: workshopType, lot_number: String(lotVal).trim(), data: rowObject });
+
+            const lotColIndex = mappedHeaders.findIndex(h => h === 'SỐ LÔ');
+            const processedRows = [];
+
+            for (let i = headerIdx + 1; i < aoa.length; i++) {
+                const rowData = aoa[i];
+                const lotVal = rowData[lotColIndex];
+                if (!lotVal || String(lotVal).trim() === '') continue;
+
+                const rowObject = {};
+                mappedHeaders.forEach((header, index) => {
+                    if (header === 'SKIP_UPDATE') return; // Không lưu cột này
+
+                    const val = rowData[index];
+                    if (header.startsWith('COT_') && (val === '' || val == null)) return;
+                    
+                    const isDateCol = /NGÀY|DATE|BẮT ĐẦU|KẾT THÚC|GIAO|THỜI GIAN/i.test(header);
+                    const isSerialNum = typeof val === 'number' && val > 25569 && val < 2958465;
+                    
+                    if (val && (isDateCol || isSerialNum)) { rowObject[header] = excelDateToJSDate(val); }
+                    else { rowObject[header] = typeof val === 'boolean' ? String(val).toUpperCase() : val; }
+                });
+                processedRows.push({ workshop: currentWorkshop, lot_number: String(lotVal).trim(), data: rowObject });
+            }
+
+            const result = await processImportLogic(currentWorkshop, processedRows);
+            totalInserted += result.inserted; totalUpdated += result.updated; totalSkipped += result.skipped;
+            processedSheets.push(sheetName);
         }
-        const result = await processImportLogic(workshopType, processedRows);
+
         fs.unlinkSync(filePath);
-        res.json({ success: true, ...result });
-    } catch (e) { console.error(e); if (fs.existsSync(req.file.path)) fs.unlinkSync(req.file.path); res.status(500).json({ error: e.message }); }
+        res.json({ success: true, message: `Đã xử lý ${processedSheets.length} sheets.`, inserted: totalInserted, updated: totalUpdated, skipped: totalSkipped });
+    } catch (e) { 
+        console.error(e); 
+        if (fs.existsSync(filePath)) fs.unlinkSync(filePath); 
+        res.status(500).json({ error: e.message }); 
+    }
 });
 
 app.post('/api/orders/batch', async (req, res) => {
