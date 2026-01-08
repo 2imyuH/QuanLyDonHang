@@ -21,7 +21,7 @@ const MAIN_FIELDS = {
     'AA': [
         { key: 'MÀU', label: 'Màu' },
         { key: 'GHI CHÚ', label: 'Ghi chú 1' },
-        { key: 'HỘI ẨM', label: 'Hội ẩm' }, 
+        { key: 'HỒI ẨM', label: 'Hồi ẩm' }, 
         { key: 'NGÀY XUỐNG ĐƠN', label: 'Ngày xuống đơn' },
         { key: 'SẢN PHẨM', label: 'Sản Phẩm' },
         { key: 'SỐ LÔ', label: 'Số Lô' },
@@ -38,7 +38,7 @@ const MAIN_FIELDS = {
     'AB': [
         { key: 'MÀU', label: 'Màu' },
         { key: 'GHI CHÚ', label: 'Ghi chú 1' },
-        { key: 'HỘI ẨM', label: 'Hội ẩm' }, 
+        { key: 'HỒI ẨM', label: 'Hồi ẩm' }, 
         { key: 'NGÀY XUỐNG ĐƠN', label: 'Ngày xuống đơn' },
         { key: 'SẢN PHẨM', label: 'Sản Phẩm' },
         { key: 'SỐ LÔ', label: 'Số Lô' },
@@ -55,7 +55,7 @@ const MAIN_FIELDS = {
     'OE': [
         { key: 'MÀU', label: 'Màu' },
         { key: 'GHI CHÚ', label: 'Ghi chú 1' },
-        { key: 'HỘI ẨM', label: 'Hội ẩm' },
+        { key: 'HỒI ẨM', label: 'Hồi ẩm' },
         { key: 'NGÀY XUỐNG ĐƠN', label: 'Ngày xuống đơn' },
         { key: 'SẢN PHẨM', label: 'Sản Phẩm' },
         { key: 'SỐ LÔ', label: 'Số Lô' },
@@ -549,7 +549,7 @@ app.post('/api/import', upload.single('file'), async (req, res) => {
                 else if (upperName.includes('BẮT ĐẦU')) name = 'BẮT ĐẦU';
                 else if (upperName.includes('KẾT THÚC')) name = 'KẾT THÚC';
                 else if (upperName.includes('THAY ĐỔI')) name = 'THAY ĐỔI';
-                else if (upperName.includes('HỘI ẨM') || upperName.includes('MOISTURE')) name = 'HỘI ẨM';
+                else if (upperName.includes('HỒI ẨM') || upperName.includes('MOISTURE')) name = 'HỒI ẨM';
                 else if (upperName.includes('NGÀY') && upperName.includes('ĐƠN')) name = 'NGÀY XUỐNG ĐƠN';
                 else if (upperName.includes('FU CUNG')) name = 'FU CUNG CÚI';
                 else if (upperName.includes('THỰC TẾ')) name = 'THỰC TẾ HOÀN THÀNH';

@@ -460,7 +460,7 @@ const handleExport = async () => {
         }
     }));
 
-    const actionCol = { title: '#', key: 'action', fixed: 'right', width: 90, render: (_, rec) => ( <Space size={2}> <Button size="small" icon={<EditOutlined style={{color: '#faad14'}}/>} onClick={() => handleEdit(rec)} /> <Popconfirm title="Xóa?" onConfirm={() => handleDelete(rec.id)}><Button size="small" icon={<DeleteOutlined style={{color: 'red'}}/>}/></Popconfirm> {activeStatus === 'ACTIVE' ? <Popconfirm title="Xong?" onConfirm={() => switchStatus(rec.id, 'COMPLETED')}><Button size="small" icon={<CheckCircleOutlined style={{color: 'green'}}/>}/></Popconfirm> : <Popconfirm title="Khôi phục?" onConfirm={() => switchStatus(rec.id, 'ACTIVE')}><Button size="small" icon={<RollbackOutlined style={{color: 'blue'}}/>}/></Popconfirm> } </Space> ) };
+    const actionCol = { title: 'Thao tác', key: 'action', fixed: 'right', width: 90, render: (_, rec) => ( <Space size={2}> <Button size="small" icon={<EditOutlined style={{color: '#faad14'}}/>} onClick={() => handleEdit(rec)} /> <Popconfirm title="Xóa?" onConfirm={() => handleDelete(rec.id)}><Button size="small" icon={<DeleteOutlined style={{color: 'red'}}/>}/></Popconfirm> {activeStatus === 'ACTIVE' ? <Popconfirm title="Xong?" onConfirm={() => switchStatus(rec.id, 'COMPLETED')}><Button size="small" icon={<CheckCircleOutlined style={{color: 'green'}}/>}/></Popconfirm> : <Popconfirm title="Khôi phục?" onConfirm={() => switchStatus(rec.id, 'ACTIVE')}><Button size="small" icon={<RollbackOutlined style={{color: 'blue'}}/>}/></Popconfirm> } </Space> ) };
     return [sttCol, ...mainTableCols, ...extraTableCols, actionCol];
   }, [data, activeWorkshop, activeStatus, MAIN_FIELDS, handleDelete, handleEdit, switchStatus]);
 
