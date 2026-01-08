@@ -29,7 +29,7 @@ const initPool = async () => {
         pool = new Pool({
             connectionString: connectionString,
             ssl: { rejectUnauthorized: false },
-            connectionTimeoutMillis: 15000,
+            connectionTimeoutMillis: 30000,
         });
         const client = await pool.connect();
         await client.query('SELECT NOW()');
@@ -53,12 +53,13 @@ const initDB = async () => {
             created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
             updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
         );
+        CREATE INDEX IF NOT EXISTS idx_workshop_lot ON orders(workshop, lot_number);
     `;
     try { await pool.query(createTableQuery); console.log("✅ Đã kiểm tra bảng orders."); } 
     catch (err) { console.error("❌ Lỗi tạo bảng:", err); }
 };
 
-// --- HELPER: FORMAT & CHUẨN HÓA DỮ LIỆU ---
+// --- HELPER FUNCTIONS ---
 const formatDateTimeVN = (isoString) => {
     if (!isoString) return "";
     const d = new Date(isoString);
@@ -74,7 +75,6 @@ const formatDateTimeVN = (isoString) => {
 
 const normalizeDateValue = (val) => {
     if (!val) return "";
-    // Excel Serial
     if (typeof val === 'number' && val > 25569 && val < 2958465) {
         const utc_days = Math.floor(val - 25569);
         const date_info = new Date(utc_days * 86400 * 1000);
@@ -83,7 +83,6 @@ const normalizeDateValue = (val) => {
         const day = String(date_info.getDate()).padStart(2, '0');
         return `${year}-${month}-${day}`;
     }
-    // String DD/MM/YYYY -> YYYY-MM-DD
     if (typeof val === 'string' && /^\d{1,2}\/\d{1,2}\/\d{4}/.test(val)) {
         const parts = val.split('/'); 
         if (parts.length === 3) {
@@ -96,14 +95,13 @@ const normalizeDateValue = (val) => {
     return String(val).trim();
 };
 
-const excelDateToJSDate = (val) => normalizeDateValue(val); // Wrapper alias
+const excelDateToJSDate = (val) => normalizeDateValue(val);
 
 const toStr = (val) => { if (val === null || val === undefined) return ""; return String(val).trim().toUpperCase(); };
 
 const normalizeData = (obj) => {
     const cleanObj = {};
     Object.keys(obj).sort().forEach(key => {
-        // Bỏ qua cột hệ thống để so sánh nội dung chính xác
         if (['STT', 'stt', 'id', 'workshop', 'lot_number', 'status', 'created_at', 'updated_at', 'SKIP_UPDATE', 'Ngày Cập Nhật'].includes(key)) return;
         if (key.startsWith('Hồi ẩm (')) return;
         let val = toStr(obj[key]);
@@ -112,88 +110,96 @@ const normalizeData = (obj) => {
     return JSON.stringify(cleanObj);
 };
 
-// --- LOGIC ĐỊNH DANH (IDENTITY CHECK) ---
-// Hai dòng được coi là "cùng một loại hàng" nếu trùng: Sản Phẩm + Màu + Chi Số
-const isIdentityMatch = (dbData, excelData) => {
-    const keys = ['SẢN PHẨM', 'MÀU', 'CHI SỐ'];
-    for (const key of keys) {
-        if (toStr(dbData[key]) !== toStr(excelData[key])) return false;
-    }
-    return true; 
+const isSameIdentity = (obj1, obj2) => {
+    if (toStr(obj1['SẢN PHẨM']) !== toStr(obj2['SẢN PHẨM'])) return false;
+    const keys1 = Object.keys(obj1).filter(k => k.startsWith('COT_'));
+    const keys2 = Object.keys(obj2).filter(k => k.startsWith('COT_'));
+    const allCotKeys = new Set([...keys1, ...keys2]);
+    for (let key of allCotKeys) { if (toStr(obj1[key]) !== toStr(obj2[key])) return false; }
+    return true;
 };
 
-// --- LOGIC XỬ LÝ IMPORT THÔNG MINH (CONSUMED ID) ---
+// --- LOGIC XỬ LÝ IMPORT TỐI ƯU (CACHING + BATCH QUERY) ---
 const processImportLogic = async (workshop, rows) => {
     let inserted = 0, skipped = 0, updated = 0;
     const client = await pool.connect();
+    
     try {
+        // BƯỚC 1: LẤY DANH SÁCH SỐ LÔ CẦN XỬ LÝ
+        const lotNumbers = [...new Set(rows.map(r => r.lot_number))];
+
+        // BƯỚC 2: TẢI DỮ LIỆU TỪ DB VỀ RAM (CHỈ 1 LỆNH SELECT)
+        // Thay vì gọi DB 1000 lần, ta gọi 1 lần lấy hết các lô có liên quan
+        const dbRes = await client.query(
+            `SELECT id, lot_number, data FROM orders 
+             WHERE workshop = $1 AND lot_number = ANY($2::text[])`,
+            [workshop, lotNumbers]
+        );
+
+        // BƯỚC 3: TẠO MAP ĐỂ TRA CỨU NHANH
+        const dbRecordsMap = {};
+        dbRes.rows.forEach(row => {
+            if (!dbRecordsMap[row.lot_number]) dbRecordsMap[row.lot_number] = [];
+            dbRecordsMap[row.lot_number].push({
+                id: row.id,
+                parsedData: JSON.parse(row.data)
+            });
+        });
+
         await client.query('BEGIN');
         
-        // Gom nhóm dữ liệu theo Số Lô để xử lý một thể
-        const rowsByLot = {};
-        for(const item of rows) {
-            const lot = item.lot_number;
-            if(!rowsByLot[lot]) rowsByLot[lot] = [];
-            rowsByLot[lot].push(item);
-        }
+        // Theo dõi các ID đã được sử dụng trong phiên này để tránh trùng lặp
+        const usedDbIds = new Set(); 
 
-        for (const lot of Object.keys(rowsByLot)) {
-            const excelItems = rowsByLot[lot];
+        for (const item of rows) {
+            const { lot_number, data } = item;
             
-            // Lấy tất cả bản ghi trong DB có cùng Số Lô
-            const res = await client.query("SELECT id, data FROM orders WHERE workshop = $1 AND lot_number = $2", [workshop, lot]);
-            const dbRecords = res.rows.map(r => ({ ...r, parsedData: JSON.parse(r.data) }));
+            // Dọn dẹp dữ liệu
+            delete data['STT']; delete data['stt']; 
+            delete data['SKIP_UPDATE']; delete data['updated_at']; delete data['Ngày Cập Nhật'];
+
+            const newSig = normalizeData(data);
+            const newDataFull = JSON.stringify(data);
             
-            const usedDbIds = new Set(); // Danh sách ID đã được khớp (Consumed)
+            // Lấy danh sách ứng viên từ RAM (Không gọi DB)
+            const candidates = dbRecordsMap[lot_number] || [];
+            
+            let handled = false;
 
-            for (const item of excelItems) {
-                const { data } = item;
-                // Dọn dẹp dữ liệu rác
-                delete data['STT']; delete data['stt']; 
-                delete data['SKIP_UPDATE']; delete data['updated_at']; delete data['Ngày Cập Nhật'];
+            // Logic 1: Tìm bản ghi GIỐNG HỆT (Skip)
+            for (const dbRecord of candidates) {
+                if (usedDbIds.has(dbRecord.id)) continue;
 
-                const newSig = normalizeData(data);
-                const newDataFull = JSON.stringify(data);
-                
-                let matchFound = false;
-                
-                // 1. Tìm bản ghi GIỐNG HỆT 100% (Ưu tiên Skip)
-                for (const dbRecord of dbRecords) {
-                    if (usedDbIds.has(dbRecord.id)) continue; // Bỏ qua nếu đã dùng
-                    
-                    const oldSig = normalizeData(dbRecord.parsedData);
-                    if (oldSig === newSig) {
-                        usedDbIds.add(dbRecord.id); // Đánh dấu đã dùng
-                        skipped++;
-                        matchFound = true;
-                        break;
-                    }
+                const oldSig = normalizeData(dbRecord.parsedData);
+                if (oldSig === newSig) {
+                    skipped++;
+                    usedDbIds.add(dbRecord.id); // Đánh dấu đã dùng
+                    handled = true;
+                    break;
                 }
-                
-                if (matchFound) continue;
+            }
 
-                // 2. Tìm bản ghi CÙNG ĐỊNH DANH (Ưu tiên Update)
-                // Cùng Số Lô (đã lọc) + Cùng Sản Phẩm + Màu + Chi Số -> Thì chắc chắn là dòng này cần update
-                for (const dbRecord of dbRecords) {
-                    if (usedDbIds.has(dbRecord.id)) continue;
-                    
-                    if (isIdentityMatch(dbRecord.parsedData, data)) {
-                        await client.query("UPDATE orders SET data = $1, updated_at = NOW() WHERE id = $2", [newDataFull, dbRecord.id]);
-                        usedDbIds.add(dbRecord.id);
-                        updated++;
-                        matchFound = true;
-                        break;
-                    }
+            if (handled) continue;
+
+            // Logic 2: Tìm bản ghi CÙNG ĐỊNH DANH (Update)
+            for (const dbRecord of candidates) {
+                if (usedDbIds.has(dbRecord.id)) continue;
+
+                if (isSameIdentity(dbRecord.parsedData, data)) {
+                    await client.query("UPDATE orders SET data = $1, updated_at = NOW() WHERE id = $2", [newDataFull, dbRecord.id]);
+                    updated++;
+                    usedDbIds.add(dbRecord.id);
+                    handled = true;
+                    break;
                 }
+            }
 
-                if (matchFound) continue;
-
-                // 3. Không tìm thấy khớp nào -> Insert mới
-                await client.query("INSERT INTO orders (workshop, lot_number, data, status) VALUES ($1, $2, $3, 'ACTIVE')", [workshop, lot, newDataFull]);
+            // Logic 3: Insert mới
+            if (!handled) {
+                await client.query("INSERT INTO orders (workshop, lot_number, data, status) VALUES ($1, $2, $3, 'ACTIVE')", [workshop, lot_number, newDataFull]);
                 inserted++;
             }
         }
-        
         await client.query('COMMIT');
     } catch (e) { await client.query('ROLLBACK'); throw e; } 
     finally { client.release(); }
@@ -398,10 +404,7 @@ app.post('/api/import', upload.single('file'), async (req, res) => {
                     const isDateCol = /NGÀY|DATE|BẮT ĐẦU|KẾT THÚC|GIAO|THỜI GIAN/i.test(header);
                     const isSerialNum = typeof val === 'number' && val > 25569 && val < 2958465;
                     
-                    if (val && (isDateCol || isSerialNum)) { 
-                        // CHUẨN HÓA NGÀY THÁNG ĐỂ TRÁNH LỖI SO SÁNH (DD/MM/YYYY -> YYYY-MM-DD)
-                        rowObject[header] = normalizeDateValue(val); 
-                    }
+                    if (val && (isDateCol || isSerialNum)) { rowObject[header] = excelDateToJSDate(val); }
                     else { rowObject[header] = typeof val === 'boolean' ? String(val).toUpperCase() : val; }
                 });
                 processedRows.push({ workshop: currentWorkshop, lot_number: String(lotVal).trim(), data: rowObject });
