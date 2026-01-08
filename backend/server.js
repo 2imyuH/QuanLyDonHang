@@ -9,7 +9,6 @@ const XLSX = require('xlsx');
 const ExcelJS = require('exceljs');
 const fs = require('fs');
 const multer = require('multer');
-const { URL } = require('url');
 
 const app = express();
 const upload = multer({ dest: 'uploads/' });
@@ -17,7 +16,7 @@ const upload = multer({ dest: 'uploads/' });
 app.use(cors({ origin: '*', methods: ['GET', 'POST', 'PUT', 'DELETE', 'PATCH'] }));
 app.use(express.json());
 
-// --- KẾT NỐI DATABASE (FIX IPV6 RENDER) ---
+// --- KẾT NỐI DATABASE ---
 let pool;
 const initPool = async () => {
     try {
@@ -60,6 +59,18 @@ const initDB = async () => {
 };
 
 // --- HELPER FUNCTIONS ---
+const formatDateTimeVN = (isoString) => {
+    if (!isoString) return "";
+    const d = new Date(isoString);
+    if (isNaN(d.getTime())) return isoString;
+    const hh = String(d.getHours()).padStart(2, '0');
+    const mm = String(d.getMinutes()).padStart(2, '0');
+    const DD = String(d.getDate()).padStart(2, '0');
+    const MM = String(d.getMonth() + 1).padStart(2, '0');
+    const YYYY = d.getFullYear();
+    return `${hh}h${mm} ${DD}/${MM}/${YYYY}`;
+};
+
 const excelDateToJSDate = (serial) => {
     if (!serial) return "";
     if (typeof serial === 'number' && serial > 25569 && serial < 2958465) {
@@ -186,68 +197,111 @@ app.patch('/api/orders/:id/status', async (req, res) => {
     catch (e) { res.status(500).json({ error: e.message }); }
 });
 
-// --- API EXPORT (ĐÃ SỬA FORMAT THEO YÊU CẦU) ---
+// --- API EXPORT (ĐÃ CHUẨN HÓA VỊ TRÍ VÀ FORMAT) ---
 app.get('/api/export', async (req, res) => {
     try {
         const { workshop, status } = req.query;
         const result = await pool.query(`SELECT data, lot_number, updated_at FROM orders WHERE workshop = $1 AND status = $2`, [workshop, status]);
+        
         const jsonData = result.rows.map((r, index) => {
             const parsed = JSON.parse(r.data || '{}');
             delete parsed['STT']; delete parsed['stt'];
-            return { "STT": index + 1, "Số LÔ": r.lot_number, ...parsed };
+            
+            // Format ngày cập nhật chuẩn
+            const formattedUpdate = formatDateTimeVN(r.updated_at);
+            
+            return { 
+                "STT": index + 1, 
+                "SỐ LÔ": r.lot_number, 
+                "updated_at": formattedUpdate,
+                ...parsed 
+            };
         });
 
         const wb = new ExcelJS.Workbook();
         const worksheet = wb.addWorksheet('Data');
 
-        const ORDER_KEYS = ["STT", "MÀU", "GHI CHÚ", "HỒI ẨM", "NGÀY XUỐNG ĐƠN", "SẢN PHẨM", "Số LÔ", "CHI SỐ", "SỐ LƯỢNG", "BẮT ĐẦU", "KẾT THÚC", "FU CUNG CÚI", "THỰC TẾ HOÀN THÀNH", "SO MÀU", "THAY ĐỔI", "LBS", "ghi chú", "ghi chú (1)"];
+        // --- DANH SÁCH CỘT ĐƯỢC SẮP XẾP CHUẨN THEO GIAO DIỆN ---
+        const ORDER_KEYS = [
+            "STT", 
+            "MÀU", 
+            "GHI CHÚ", 
+            "HỒI ẨM", 
+            "NGÀY XUỐNG ĐƠN", 
+            "SẢN PHẨM", 
+            "SỐ LÔ", 
+            "CHI SỐ", 
+            "SỐ LƯỢNG", 
+            "BẮT ĐẦU", 
+            "KẾT THÚC", 
+            "THAY ĐỔI", // Dành cho AA/AB
+            "FU CUNG CÚI", // Dành cho OE
+            "THỰC TẾ HOÀN THÀNH", // Dành cho OE
+            "SO MÀU", 
+            "ghi chú", 
+            "ghi chú (1)",
+            "updated_at"
+        ];
+
+        // Map tên hiển thị trên Header
         const HEADER_MAP = {
             "GHI CHÚ": "Ghi chú 1", "ghi chú": "Ghi chú 2", "ghi chú (1)": "Ghi chú 3",
             "NGÀY XUỐNG ĐƠN": "Ngày xuống đơn", "SỐ LƯỢNG": "Số Lượng",
-            "BẮT ĐẦU": "Bắt Đầu", "KẾT THÚC": "Kết Thúc", "Số LÔ": "Số Lô", "SẢN PHẨM": "Sản Phẩm",
+            "BẮT ĐẦU": "Bắt Đầu", "KẾT THÚC": "Kết Thúc", "SỐ LÔ": "Số Lô", "SẢN PHẨM": "Sản Phẩm",
             "CHI SỐ": "Chi Số", "MÀU": "Màu", "THAY ĐỔI": "Thay Đổi", "SO MÀU": "So Màu", "HỒI ẨM": "Hồi ẩm",
-            "FU CUNG CÚI": "Fu Cung Cúi", "THỰC TẾ HOÀN THÀNH": "Thực Tế"
+            "FU CUNG CÚI": "Fu Cung Cúi", "THỰC TẾ HOÀN THÀNH": "Thực Tế",
+            "updated_at": "Ngày Cập Nhật"
         };
 
         let allKeys = new Set();
         jsonData.forEach(item => Object.keys(item).forEach(k => allKeys.add(k)));
+        
+        // Logic sắp xếp: Ưu tiên ORDER_KEYS, sau đó đến COT_, cuối cùng là các cột khác
         const sortedKeys = Array.from(allKeys).sort((a, b) => {
-            const indexA = ORDER_KEYS.indexOf(a.toUpperCase());
-            const indexB = ORDER_KEYS.indexOf(b.toUpperCase());
+            const indexA = ORDER_KEYS.indexOf(a);
+            const indexB = ORDER_KEYS.indexOf(b);
+            
+            // Nếu cả 2 đều nằm trong danh sách chuẩn -> Sắp theo thứ tự chuẩn
             if (indexA !== -1 && indexB !== -1) return indexA - indexB;
-            if (indexA !== -1) return -1; if (indexB !== -1) return 1;
-            const isCotA = a.startsWith('COT_'), isCotB = b.startsWith('COT_');
+            
+            // Nếu chỉ 1 cái nằm trong danh sách -> Cái đó lên trước
+            if (indexA !== -1) return -1; 
+            if (indexB !== -1) return 1;
+            
+            // Xử lý các cột COT_ (Sắp theo số)
+            const isCotA = a.startsWith('COT_');
+            const isCotB = b.startsWith('COT_');
             if (isCotA && isCotB) return (parseInt(a.replace('COT_', '') || 0) - parseInt(b.replace('COT_', '') || 0));
-            if (isCotA) return -1; if (isCotB) return 1;
+            if (isCotA) return 1; // COT_ đẩy xuống cuối (sau các cột info khác nếu có)
+            if (isCotB) return -1;
+            
             return a.localeCompare(b);
         });
 
         worksheet.columns = sortedKeys.map(key => ({ header: HEADER_MAP[key] || key, key: key }));
         worksheet.addRows(jsonData);
 
-        // --- CẤU HÌNH STYLE (Times New Roman, Blue Header, Center Align) ---
+        // --- STYLE: Times New Roman, Center, Blue Header ---
         const fontStyle = { name: 'Times New Roman', size: 12 };
         const borderStyle = { top: { style: 'thin' }, left: { style: 'thin' }, bottom: { style: 'thin' }, right: { style: 'thin' } };
-        // Thêm horizontal: 'center'
         const alignStyle = { vertical: 'middle', horizontal: 'center', wrapText: true }; 
 
         worksheet.eachRow((row, rowNumber) => {
             row.eachCell((cell) => {
                 cell.font = fontStyle;
                 cell.border = borderStyle;
-                cell.alignment = alignStyle; // Áp dụng căn giữa cho tất cả
+                cell.alignment = alignStyle;
             });
-            if (rowNumber === 1) { // Header Row
+            if (rowNumber === 1) { // Header
                 row.height = 30;
                 row.eachCell((cell) => {
-                    cell.font = { ...fontStyle, bold: true, color: { argb: 'FFFFFFFF' } }; // Chữ Trắng Đậm
-                    cell.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FF1F4E78' } }; // Nền Xanh Đậm
-                    cell.alignment = { ...alignStyle, horizontal: 'center' }; // Header cũng căn giữa
+                    cell.font = { ...fontStyle, bold: true, color: { argb: 'FFFFFFFF' } };
+                    cell.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FF1F4E78' } };
+                    cell.alignment = { ...alignStyle, horizontal: 'center' };
                 });
             }
         });
         
-        // Auto width
         worksheet.columns.forEach(column => { 
             let maxLength = 0; if (column.header) maxLength = column.header.length; 
             column.eachCell({ includeEmpty: true }, (cell, rowNumber) => { if (rowNumber > 50) return; const val = cell.value ? cell.value.toString() : ""; if (val.length > maxLength) maxLength = val.length; }); 
@@ -262,6 +316,7 @@ app.get('/api/export', async (req, res) => {
     } catch (e) { console.error(e); res.status(500).send(e.message); }
 });
 
+// --- IMPORT (FIXED MAPPING SỐ LÔ) ---
 app.post('/api/import', upload.single('file'), async (req, res) => {
     if (!req.file) return res.status(400).send("No file.");
     const filePath = req.file.path;
@@ -271,9 +326,13 @@ app.post('/api/import', upload.single('file'), async (req, res) => {
         const workbook = XLSX.readFile(filePath);
         const sheetName = workbook.SheetNames[0];
         const aoa = XLSX.utils.sheet_to_json(workbook.Sheets[sheetName], { header: 1, defval: "" });
+        
         let headerIdx = -1;
-        for (let i = 0; i < Math.min(aoa.length, 30); i++) { if (JSON.stringify(aoa[i]).toUpperCase().includes('SỐ LÔ')) { headerIdx = i; break; } }
-        if (headerIdx === -1) { fs.unlinkSync(filePath); return res.status(400).json({ error: "Lỗi file: Không tìm thấy cột Số Lô" }); }
+        for (let i = 0; i < Math.min(aoa.length, 30); i++) { 
+            if (JSON.stringify(aoa[i]).toUpperCase().includes('SỐ LÔ')) { headerIdx = i; break; } 
+        }
+        if (headerIdx === -1) { fs.unlinkSync(filePath); return res.status(400).json({ error: "Lỗi file: Không tìm thấy cột SỐ LÔ" }); }
+        
         const rawHeaders = aoa[headerIdx];
         if (!isForce) {
             const headerStr = JSON.stringify(rawHeaders).toUpperCase();
@@ -285,10 +344,13 @@ app.post('/api/import', upload.single('file'), async (req, res) => {
         const mappedHeaders = [];
         const nameCount = {};
         let noteCounter = 0;
+        
         rawHeaders.forEach((h, index) => {
             let name = (h && String(h).trim() !== '') ? String(h).trim() : '';
             const upperName = name.toUpperCase();
-            if (upperName.includes('SỐ LÔ')) name = 'Số LÔ';
+            
+            // --- MAPPING CHUẨN HÓA IN HOA ---
+            if (upperName.includes('SỐ LÔ')) name = 'SỐ LÔ'; // QUAN TRỌNG: IN HOA
             else if (upperName.includes('SẢN PHẨM')) name = 'SẢN PHẨM';
             else if (upperName.includes('MÀU') && !upperName.includes('SO')) name = 'MÀU';
             else if (upperName.includes('SO MÀU')) name = 'SO MÀU';
@@ -309,13 +371,16 @@ app.post('/api/import', upload.single('file'), async (req, res) => {
                 else name = `GHI CHÚ (${noteCounter})`;
             }
             if (name === '' || name.startsWith('COT_')) { if (name === '') name = `COT_${index}`; }
-            if (!['GHI CHÚ', 'ghi chú', 'ghi chú (1)'].includes(name)) {
+            
+            // Đánh số nếu trùng (trừ các key chuẩn)
+            const FIXED = ['GHI CHÚ', 'ghi chú', 'ghi chú (1)'];
+            if (!FIXED.includes(name)) {
                 if (nameCount[name]) { nameCount[name]++; name = `${name} (${nameCount[name]})`; } else { nameCount[name] = 1; }
             }
             mappedHeaders.push(name);
         });
 
-        const lotColIndex = mappedHeaders.findIndex(h => h === 'Số LÔ');
+        const lotColIndex = mappedHeaders.findIndex(h => h === 'SỐ LÔ');
         const processedRows = [];
         for (let i = headerIdx + 1; i < aoa.length; i++) {
             const rowData = aoa[i];
@@ -324,6 +389,7 @@ app.post('/api/import', upload.single('file'), async (req, res) => {
             const rowObject = {};
             mappedHeaders.forEach((header, index) => {
                 const val = rowData[index];
+                if (header.startsWith('COT_') && (val === '' || val == null)) return; // Bỏ cột rác
                 const isDateCol = /NGÀY|DATE|BẮT ĐẦU|KẾT THÚC|GIAO|THỜI GIAN/i.test(header);
                 const isSerialNum = typeof val === 'number' && val > 25569 && val < 2958465;
                 if (val && (isDateCol || isSerialNum)) { rowObject[header] = excelDateToJSDate(val); }
