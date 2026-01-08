@@ -65,8 +65,8 @@ const formatDateTimeVN = (isoString) => {
     const d = new Date(isoString);
     if (isNaN(d.getTime())) return isoString;
 
-    // Server Render là UTC+0, cộng thêm 7 tiếng để ra giờ VN
-    const vnTime = new Date(d.getTime() + 7 * 60 * 60 * 1000); 
+    // Server Render là UTC+0, cộng thêm 8 tiếng để ra giờ VN
+    const vnTime = new Date(d.getTime() + 8 * 60 * 60 * 1000); 
 
     const hh = String(vnTime.getUTCHours()).padStart(2, '0');
     const mm = String(vnTime.getUTCMinutes()).padStart(2, '0');
