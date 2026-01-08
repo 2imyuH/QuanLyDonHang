@@ -58,28 +58,48 @@ const initDB = async () => {
     catch (err) { console.error("❌ Lỗi tạo bảng:", err); }
 };
 
-// --- HELPER FUNCTIONS ---
-const excelDateToJSDate = (serial) => {
-    if (!serial) return "";
-    if (typeof serial === 'number' && serial > 25569 && serial < 2958465) {
-        const utc_days = Math.floor(serial - 25569);
-        const utc_value = utc_days * 86400;
-        const date_info = new Date(utc_value * 1000);
-        const fractional_day = serial - Math.floor(serial) + 0.0000001;
-        const total_seconds = Math.floor(86400 * fractional_day);
-        const seconds = total_seconds % 60;
-        const hours = Math.floor(total_seconds / 3600);
-        const minutes = Math.floor(total_seconds / 60) % 60;
-        date_info.setUTCHours(hours, minutes, seconds);
-        const day = String(date_info.getDate()).padStart(2, '0');
-        const month = String(date_info.getMonth() + 1).padStart(2, '0');
+// --- HELPER: FORMAT NGÀY GIỜ VIỆT NAM ---
+const formatDateTimeVN = (isoString) => {
+    if (!isoString) return "";
+    const d = new Date(isoString);
+    if (isNaN(d.getTime())) return isoString;
+    const vnTime = new Date(d.getTime() + 7 * 60 * 60 * 1000); 
+    const hh = String(vnTime.getUTCHours()).padStart(2, '0');
+    const mm = String(vnTime.getUTCMinutes()).padStart(2, '0');
+    const DD = String(vnTime.getUTCDate()).padStart(2, '0');
+    const MM = String(vnTime.getUTCMonth() + 1).padStart(2, '0');
+    const YYYY = vnTime.getUTCFullYear();
+    return `${hh}h${mm} ${DD}/${MM}/${YYYY}`;
+};
+
+// --- HELPER: XỬ LÝ DATE TỪ EXCEL (QUAN TRỌNG: ĐỔI VỀ YYYY-MM-DD) ---
+const normalizeDateValue = (val) => {
+    if (!val) return "";
+    
+    // Trường hợp 1: Excel Serial Number (Ví dụ: 45284)
+    if (typeof val === 'number' && val > 25569 && val < 2958465) {
+        const utc_days = Math.floor(val - 25569);
+        const date_info = new Date(utc_days * 86400 * 1000);
         const year = date_info.getFullYear();
-        const hourStr = String(hours).padStart(2, '0');
-        const minStr = String(minutes).padStart(2, '0');
-        if (hours !== 0 || minutes !== 0) return `${day}/${month}/${year} ${hourStr}:${minStr}`;
-        return `${year}-${month}-${day}`;
+        const month = String(date_info.getMonth() + 1).padStart(2, '0');
+        const day = String(date_info.getDate()).padStart(2, '0');
+        return `${year}-${month}-${day}`; // Trả về chuẩn YYYY-MM-DD
     }
-    return String(serial).trim();
+
+    // Trường hợp 2: String dạng "24/12/2025" -> Đổi thành "2025-12-24"
+    if (typeof val === 'string' && /^\d{1,2}\/\d{1,2}\/\d{4}/.test(val)) {
+        const parts = val.split('/'); // [24, 12, 2025]
+        if (parts.length === 3) {
+            const day = parts[0].padStart(2, '0');
+            const month = parts[1].padStart(2, '0');
+            const year = parts[2];
+            // Bỏ qua phần giờ phút nếu có
+            return `${year}-${month}-${day}`.substring(0, 10);
+        }
+    }
+
+    // Trường hợp 3: String dạng "2025-12-24" -> Giữ nguyên
+    return String(val).trim();
 };
 
 const toStr = (val) => { if (val === null || val === undefined) return ""; return String(val).trim().toUpperCase(); };
@@ -87,8 +107,10 @@ const toStr = (val) => { if (val === null || val === undefined) return ""; retur
 const normalizeData = (obj) => {
     const cleanObj = {};
     Object.keys(obj).sort().forEach(key => {
+        // BỎ QUA CÁC CỘT RÁC VÀ NGÀY CẬP NHẬT KHI SO SÁNH
         if (['STT', 'stt', 'id', 'workshop', 'lot_number', 'status', 'created_at', 'updated_at', 'SKIP_UPDATE', 'Ngày Cập Nhật'].includes(key)) return;
         if (key.startsWith('Hồi ẩm (')) return;
+        
         let val = toStr(obj[key]);
         if (val !== "") cleanObj[key] = val;
     });
@@ -113,7 +135,7 @@ const processImportLogic = async (workshop, rows) => {
         for (const item of rows) {
             const { lot_number, data } = item;
             
-            // Xóa các cột hệ thống
+            // Dọn dẹp dữ liệu rác
             delete data['STT']; delete data['stt']; 
             delete data['SKIP_UPDATE']; delete data['updated_at']; delete data['Ngày Cập Nhật'];
 
@@ -128,9 +150,9 @@ const processImportLogic = async (workshop, rows) => {
                 if (isSameIdentity(oldData, data)) {
                     const oldSig = normalizeData(oldData);
                     if (oldSig === newSig) { 
-                        skipped++; // Giống hệt -> Giữ nguyên
+                        skipped++; // Giống hệt -> Bỏ qua
                     } else { 
-                        // Khác -> Update -> Cập nhật thời gian
+                        // Khác -> Update -> Cập nhật giờ
                         await client.query("UPDATE orders SET data = $1, updated_at = NOW() WHERE id = $2", [newDataFull, record.id]); 
                         updated++; 
                     }
@@ -190,7 +212,7 @@ app.patch('/api/orders/:id/status', async (req, res) => {
     catch (e) { res.status(500).json({ error: e.message }); }
 });
 
-// --- API EXPORT (ĐÃ CHỈNH VỊ TRÍ CỘT KHỚP UI) ---
+// --- API EXPORT (CHUẨN VỊ TRÍ, BỎ CỘT UPDATE) ---
 app.get('/api/export', async (req, res) => {
     try {
         const { workshop, status } = req.query;
@@ -200,43 +222,18 @@ app.get('/api/export', async (req, res) => {
         const jsonData = result.rows.map((r, index) => {
             const parsed = JSON.parse(r.data || '{}');
             delete parsed['STT']; delete parsed['stt'];
+            // Chỉ lấy dữ liệu, KHÔNG export ngày cập nhật
             return { "STT": index + 1, "SỐ LÔ": r.lot_number, ...parsed };
         });
 
         const wb = new ExcelJS.Workbook();
         const worksheet = wb.addWorksheet('Data');
 
-        // --- CẤU HÌNH THỨ TỰ CỘT CHÍNH XÁC ---
         const COLUMNS_CONFIG = {
-            'AA': [
-                "STT", 
-                "MÀU", 
-                "GHI CHÚ", // Ghi chú 1 nằm đây
-                "HỒI ẨM", 
-                "NGÀY XUỐNG ĐƠN", 
-                "SẢN PHẨM", 
-                "SỐ LÔ", 
-                "CHI SỐ", 
-                "SỐ LƯỢNG", 
-                "BẮT ĐẦU", 
-                "KẾT THÚC", 
-                "THAY ĐỔI", 
-                "SO MÀU", 
-                "ghi chú",     // Ghi chú 2 (Ở CUỐI)
-                "ghi chú (1)"  // Ghi chú 3 (Ở CUỐI)
-            ],
-            'AB': [
-                "STT", "MÀU", "GHI CHÚ", "HỒI ẨM", "NGÀY XUỐNG ĐƠN", "SẢN PHẨM", 
-                "SỐ LÔ", "CHI SỐ", "SỐ LƯỢNG", "BẮT ĐẦU", "KẾT THÚC", "THAY ĐỔI", 
-                "SO MÀU", "ghi chú", "ghi chú (1)"
-            ],
-            'OE': [
-                "STT", "MÀU", "GHI CHÚ", "HỒI ẨM", "NGÀY XUỐNG ĐƠN", "SẢN PHẨM", 
-                "SỐ LÔ", "CHI SỐ", "SỐ LƯỢNG", "BẮT ĐẦU", "KẾT THÚC", "FU CUNG CÚI", 
-                "THỰC TẾ HOÀN THÀNH", "SO MÀU", "ghi chú", "ghi chú (1)"
-            ]
+            'AA': ["STT", "MÀU", "GHI CHÚ", "HỒI ẨM", "NGÀY XUỐNG ĐƠN", "SẢN PHẨM", "SỐ LÔ", "CHI SỐ", "SỐ LƯỢNG", "BẮT ĐẦU", "KẾT THÚC", "THAY ĐỔI", "SO MÀU", "ghi chú", "ghi chú (1)"],
+            'AB': ["STT", "MÀU", "GHI CHÚ", "HỒI ẨM", "NGÀY XUỐNG ĐƠN", "SẢN PHẨM", "SỐ LÔ", "CHI SỐ", "SỐ LƯỢNG", "BẮT ĐẦU", "KẾT THÚC", "THAY ĐỔI", "SO MÀU", "ghi chú", "ghi chú (1)"],
+            'OE': ["STT", "MÀU", "GHI CHÚ", "HỒI ẨM", "NGÀY XUỐNG ĐƠN", "SẢN PHẨM", "SỐ LÔ", "CHI SỐ", "SỐ LƯỢNG", "BẮT ĐẦU", "KẾT THÚC", "FU CUNG CÚI", "THỰC TẾ HOÀN THÀNH", "SO MÀU", "ghi chú", "ghi chú (1)"]
         };
-
         const targetOrder = COLUMNS_CONFIG[currentWorkshop] || COLUMNS_CONFIG['AA'];
 
         const HEADER_MAP = {
@@ -251,25 +248,13 @@ app.get('/api/export', async (req, res) => {
         jsonData.forEach(item => Object.keys(item).forEach(k => allKeys.add(k)));
         
         const sortedKeys = Array.from(allKeys).sort((a, b) => {
-            // Tìm vị trí trong danh sách cấu hình
-            const indexA = targetOrder.indexOf(a); // Tìm key chính xác (ví dụ 'ghi chú')
-            const indexB = targetOrder.indexOf(b);
-            
-            // Nếu không tìm thấy, thử tìm phiên bản in hoa (cho các cột khác)
-            const indexA_Final = indexA !== -1 ? indexA : targetOrder.indexOf(a.toUpperCase());
-            const indexB_Final = indexB !== -1 ? indexB : targetOrder.indexOf(b.toUpperCase());
-
-            if (indexA_Final !== -1 && indexB_Final !== -1) return indexA_Final - indexB_Final;
-            if (indexA_Final !== -1) return -1; 
-            if (indexB_Final !== -1) return 1;
-            
-            // Các cột COT_ xuống cuối cùng
-            const isCotA = a.startsWith('COT_');
-            const isCotB = b.startsWith('COT_');
+            const indexA = targetOrder.findIndex(key => key === a || key === a.toUpperCase());
+            const indexB = targetOrder.findIndex(key => key === b || key === b.toUpperCase());
+            if (indexA !== -1 && indexB !== -1) return indexA - indexB;
+            if (indexA !== -1) return -1; if (indexB !== -1) return 1;
+            const isCotA = a.startsWith('COT_'); const isCotB = b.startsWith('COT_');
             if (isCotA && isCotB) return (parseInt(a.replace('COT_', '') || 0) - parseInt(b.replace('COT_', '') || 0));
-            if (isCotA) return 1; 
-            if (isCotB) return -1;
-            
+            if (isCotA) return 1; if (isCotB) return -1;
             return a.localeCompare(b);
         });
 
@@ -287,7 +272,6 @@ app.get('/api/export', async (req, res) => {
                 row.eachCell((cell) => { cell.font = { ...fontStyle, bold: true, color: { argb: 'FFFFFFFF' } }; cell.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FF1F4E78' } }; cell.alignment = { ...alignStyle, horizontal: 'center' }; });
             }
         });
-        
         worksheet.columns.forEach(column => { 
             let maxLength = 0; if (column.header) maxLength = column.header.length; 
             column.eachCell({ includeEmpty: true }, (cell, rowNumber) => { if (rowNumber > 50) return; const val = cell.value ? cell.value.toString() : ""; if (val.length > maxLength) maxLength = val.length; }); 
@@ -301,7 +285,7 @@ app.get('/api/export', async (req, res) => {
     } catch (e) { console.error(e); res.status(500).send(e.message); }
 });
 
-// --- API IMPORT ĐA SHEET (GIỮ NGUYÊN LOGIC BỎ CỘT NGÀY CẬP NHẬT) ---
+// --- API IMPORT ĐA SHEET (FIXED DATE COMPARE) ---
 app.post('/api/import', upload.single('file'), async (req, res) => {
     if (!req.file) return res.status(400).send("No file.");
     const filePath = req.file.path;
@@ -356,6 +340,7 @@ app.post('/api/import', upload.single('file'), async (req, res) => {
                     else if (noteCounter === 3) name = 'ghi chú (1)';
                     else name = `GHI CHÚ (${noteCounter})`;
                 }
+                // --- NHẬN DIỆN CỘT NGÀY CẬP NHẬT ---
                 else if (upperName.includes('CẬP NHẬT') || upperName.includes('UPDATED')) {
                     name = 'SKIP_UPDATE';
                 }
@@ -385,8 +370,14 @@ app.post('/api/import', upload.single('file'), async (req, res) => {
                     const isDateCol = /NGÀY|DATE|BẮT ĐẦU|KẾT THÚC|GIAO|THỜI GIAN/i.test(header);
                     const isSerialNum = typeof val === 'number' && val > 25569 && val < 2958465;
                     
-                    if (val && (isDateCol || isSerialNum)) { rowObject[header] = excelDateToJSDate(val); }
-                    else { rowObject[header] = typeof val === 'boolean' ? String(val).toUpperCase() : val; }
+                    if (val && (isDateCol || isSerialNum)) { 
+                        // --- SỬ DỤNG HÀM CHUẨN HÓA DATE MỚI ---
+                        rowObject[header] = normalizeDateValue(val); 
+                    }
+                    else { 
+                        // Chỉ uppercase nếu là boolean
+                        rowObject[header] = typeof val === 'boolean' ? String(val).toUpperCase() : val; 
+                    }
                 });
                 processedRows.push({ workshop: currentWorkshop, lot_number: String(lotVal).trim(), data: rowObject });
             }
