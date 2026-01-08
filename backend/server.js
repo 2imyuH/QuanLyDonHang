@@ -209,33 +209,23 @@ app.patch('/api/orders/:id/status', async (req, res) => {
 });
 
 // --- 4. API EXPORT (ĐÃ ĐỒNG BỘ VỚI App.js) ---
-// ========================================
-// THAY ĐOẠN app.get('/api/export', ...) TRONG server.js
-// ========================================
-
 app.get('/api/export', async (req, res) => {
     try {
         const { workshop, status } = req.query;
         const currentWorkshop = workshop || 'AA';
-        
-        // ✅ VẪN LẤY updated_at từ DB (để logic so sánh hoạt động)
-        const result = await pool.query(
-            `SELECT data, lot_number FROM orders WHERE workshop = $1 AND status = $2 ORDER BY id ASC`, 
-            [currentWorkshop, status]
-        );
+        const result = await pool.query(`SELECT data, lot_number, updated_at FROM orders WHERE workshop = $1 AND status = $2`, [currentWorkshop, status]);
         
         const jsonData = result.rows.map((r, index) => {
             const parsed = JSON.parse(r.data || '{}');
+            delete parsed['STT']; delete parsed['stt'];
             
-            // ✅ XÓA các cột hệ thống không cần export
-            delete parsed['STT']; 
-            delete parsed['stt'];
-            delete parsed['Số Lô']; // Xóa Số Lô từ data JSON (vì dùng lot_number)
-            delete parsed['updated_at']; // Xóa nếu có trong data
+            // Format ngày giờ Việt Nam
+            const formattedUpdate = formatDateTimeVN(r.updated_at);
             
             return { 
                 "STT": index + 1, 
-                "Số Lô": r.lot_number, // ✅ Dùng lot_number từ database
+                "SỐ LÔ": r.lot_number, 
+                "updated_at": formattedUpdate,
                 ...parsed 
             };
         });
@@ -243,49 +233,32 @@ app.get('/api/export', async (req, res) => {
         const wb = new ExcelJS.Workbook();
         const worksheet = wb.addWorksheet('Data');
 
-        // --- DANH SÁCH CỘT CHUẨN (ĐÃ BỎ updated_at) ---
+        // --- DANH SÁCH CỘT CHUẨN (Khớp với App.js) ---
         const COLUMNS_CONFIG = {
-            'AA': ["STT", "MÀU", "GHI CHÚ", "HỒI ẨM", "NGÀY XUỐNG ĐƠN", "SẢN PHẨM", "Số Lô", "CHI SỐ", "SỐ LƯỢNG", "BẮT ĐẦU", "KẾT THÚC", "THAY ĐỔI", "SO MÀU", "ghi chú", "ghi chú (1)"],
-            'AB': ["STT", "MÀU", "GHI CHÚ", "HỒI ẨM", "NGÀY XUỐNG ĐƠN", "SẢN PHẨM", "Số Lô", "CHI SỐ", "SỐ LƯỢNG", "BẮT ĐẦU", "KẾT THÚC", "THAY ĐỔI", "SO MÀU", "ghi chú", "ghi chú (1)"],
-            'OE': ["STT", "MÀU", "GHI CHÚ", "HỒI ẨM", "NGÀY XUỐNG ĐƠN", "SẢN PHẨM", "Số Lô", "CHI SỐ", "SỐ LƯỢNG", "BẮT ĐẦU", "KẾT THÚC", "FU CUNG CÚI", "THỰC TẾ HOÀN THÀNH", "SO MÀU", "ghi chú", "ghi chú (1)"]
+            'AA': ["STT", "MÀU", "GHI CHÚ", "HỒI ẨM", "NGÀY XUỐNG ĐƠN", "SẢN PHẨM", "SỐ LÔ", "CHI SỐ", "SỐ LƯỢNG", "BẮT ĐẦU", "KẾT THÚC", "THAY ĐỔI", "SO MÀU", "ghi chú", "ghi chú (1)", "updated_at"],
+            'AB': ["STT", "MÀU", "GHI CHÚ", "HỒI ẨM", "NGÀY XUỐNG ĐƠN", "SẢN PHẨM", "SỐ LÔ", "CHI SỐ", "SỐ LƯỢNG", "BẮT ĐẦU", "KẾT THÚC", "THAY ĐỔI", "SO MÀU", "ghi chú", "ghi chú (1)", "updated_at"],
+            'OE': ["STT", "MÀU", "GHI CHÚ", "HỒI ẨM", "NGÀY XUỐNG ĐƠN", "SẢN PHẨM", "SỐ LÔ", "CHI SỐ", "SỐ LƯỢNG", "BẮT ĐẦU", "KẾT THÚC", "FU CUNG CÚI", "THỰC TẾ HOÀN THÀNH", "SO MÀU", "ghi chú", "ghi chú (1)", "updated_at"]
         };
 
         const targetOrder = COLUMNS_CONFIG[currentWorkshop] || COLUMNS_CONFIG['AA'];
 
-        // Map tên Header tiếng Việt (ĐÃ BỎ "updated_at")
+        // Map tên Header tiếng Việt
         const HEADER_MAP = {
-            "GHI CHÚ": "Ghi chú 1", 
-            "ghi chú": "Ghi chú 2", 
-            "ghi chú (1)": "Ghi chú 3",
-            "NGÀY XUỐNG ĐƠN": "Ngày xuống đơn", 
-            "SỐ LƯỢNG": "Số Lượng",
-            "BẮT ĐẦU": "Bắt Đầu", 
-            "KẾT THÚC": "Kết Thúc", 
-            "Số Lô": "Số Lô", 
-            "SẢN PHẨM": "Sản Phẩm",
-            "CHI SỐ": "Chi Số", 
-            "MÀU": "Màu", 
-            "THAY ĐỔI": "Thay Đổi", 
-            "SO MÀU": "So Màu", 
-            "HỒI ẨM": "Hồi ẩm",
-            "FU CUNG CÚI": "Fu Cung Cúi", 
-            "THỰC TẾ HOÀN THÀNH": "Thực Tế"
+            "GHI CHÚ": "Ghi chú 1", "ghi chú": "Ghi chú 2", "ghi chú (1)": "Ghi chú 3",
+            "NGÀY XUỐNG ĐƠN": "Ngày xuống đơn", "SỐ LƯỢNG": "Số Lượng",
+            "BẮT ĐẦU": "Bắt Đầu", "KẾT THÚC": "Kết Thúc", "SỐ LÔ": "Số Lô", "SẢN PHẨM": "Sản Phẩm",
+            "CHI SỐ": "Chi Số", "MÀU": "Màu", "THAY ĐỔI": "Thay Đổi", "SO MÀU": "So Màu", "HỒI ẨM": "Hồi ẩm",
+            "FU CUNG CÚI": "Fu Cung Cúi", "THỰC TẾ HOÀN THÀNH": "Thực Tế"
         };
 
         let allKeys = new Set();
         jsonData.forEach(item => Object.keys(item).forEach(k => allKeys.add(k)));
         
         const sortedKeys = Array.from(allKeys).sort((a, b) => {
-            const upperA = a.toUpperCase();
-            const upperB = b.toUpperCase();
-            
-            // So sánh với targetOrder (case-insensitive)
-            const indexA = targetOrder.findIndex(key => 
-                key === a || key === upperA || key.toUpperCase() === upperA
-            );
-            const indexB = targetOrder.findIndex(key => 
-                key === b || key === upperB || key.toUpperCase() === upperB
-            );
+            // Logic sắp xếp ưu tiên theo danh sách targetOrder
+            // Cần so sánh cả key thường và key IN HOA để đảm bảo khớp
+            const indexA = targetOrder.findIndex(key => key === a || key === a.toUpperCase());
+            const indexB = targetOrder.findIndex(key => key === b || key === b.toUpperCase());
             
             if (indexA !== -1 && indexB !== -1) return indexA - indexB;
             if (indexA !== -1) return -1; 
@@ -294,93 +267,47 @@ app.get('/api/export', async (req, res) => {
             // Các cột COT_ sắp xếp ở cuối
             const isCotA = a.startsWith('COT_');
             const isCotB = b.startsWith('COT_');
-            if (isCotA && isCotB) {
-                return (parseInt(a.replace('COT_', '') || 0) - parseInt(b.replace('COT_', '') || 0));
-            }
+            if (isCotA && isCotB) return (parseInt(a.replace('COT_', '') || 0) - parseInt(b.replace('COT_', '') || 0));
             if (isCotA) return 1; 
             if (isCotB) return -1;
             
             return a.localeCompare(b);
         });
 
-        worksheet.columns = sortedKeys.map(key => ({ 
-            header: HEADER_MAP[key] || key, 
-            key: key 
-        }));
+        worksheet.columns = sortedKeys.map(key => ({ header: HEADER_MAP[key] || key, key: key }));
         worksheet.addRows(jsonData);
 
-        // ========================================
-        // STYLE: Font Times New Roman, Căn giữa
-        // ========================================
+        // Style: Font Times New Roman, Căn giữa
         const fontStyle = { name: 'Times New Roman', size: 12 };
-        const borderStyle = { 
-            top: { style: 'thin' }, 
-            left: { style: 'thin' }, 
-            bottom: { style: 'thin' }, 
-            right: { style: 'thin' } 
-        };
-        const alignStyle = { 
-            vertical: 'middle', 
-            horizontal: 'center', 
-            wrapText: true 
-        }; 
+        const borderStyle = { top: { style: 'thin' }, left: { style: 'thin' }, bottom: { style: 'thin' }, right: { style: 'thin' } };
+        const alignStyle = { vertical: 'middle', horizontal: 'center', wrapText: true }; 
 
         worksheet.eachRow((row, rowNumber) => {
             row.eachCell((cell) => {
-                cell.font = fontStyle; 
-                cell.border = borderStyle; 
-                cell.alignment = alignStyle;
+                cell.font = fontStyle; cell.border = borderStyle; cell.alignment = alignStyle;
             });
-            
-            if (rowNumber === 1) { // Header row
+            if (rowNumber === 1) { // Header
                 row.height = 30;
                 row.eachCell((cell) => {
-                    cell.font = { 
-                        ...fontStyle, 
-                        bold: true, 
-                        color: { argb: 'FFFFFFFF' } 
-                    };
-                    cell.fill = { 
-                        type: 'pattern', 
-                        pattern: 'solid', 
-                        fgColor: { argb: 'FF1F4E78' } 
-                    };
-                    cell.alignment = { 
-                        ...alignStyle, 
-                        horizontal: 'center' 
-                    };
+                    cell.font = { ...fontStyle, bold: true, color: { argb: 'FFFFFFFF' } };
+                    cell.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FF1F4E78' } };
+                    cell.alignment = { ...alignStyle, horizontal: 'center' };
                 });
             }
         });
         
-        // Auto-fit column width
         worksheet.columns.forEach(column => { 
-            let maxLength = 0; 
-            if (column.header) maxLength = column.header.length; 
-            
-            column.eachCell({ includeEmpty: true }, (cell, rowNumber) => { 
-                if (rowNumber > 50) return; 
-                const val = cell.value ? cell.value.toString() : ""; 
-                if (val.length > maxLength) maxLength = val.length; 
-            }); 
-            
+            let maxLength = 0; if (column.header) maxLength = column.header.length; 
+            column.eachCell({ includeEmpty: true }, (cell, rowNumber) => { if (rowNumber > 50) return; const val = cell.value ? cell.value.toString() : ""; if (val.length > maxLength) maxLength = val.length; }); 
             column.width = Math.min(maxLength + 5, 60); 
         });
 
         const buffer = await wb.xlsx.writeBuffer();
-        const dateStr = new Date().toLocaleDateString('en-GB', { 
-            day: '2-digit', 
-            month: '2-digit' 
-        }).replace('/', '');
-        
+        const dateStr = new Date().toLocaleDateString('en-GB', { day: '2-digit', month: '2-digit' }).replace('/', '');
         res.setHeader('Content-Disposition', `attachment; filename="${workshop}_${dateStr}.xlsx"`);
         res.setHeader('Content-Type', 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet');
         res.send(buffer);
-        
-    } catch (e) { 
-        console.error(e); 
-        res.status(500).send(e.message); 
-    }
+    } catch (e) { console.error(e); res.status(500).send(e.message); }
 });
 
 // --- IMPORT (FIX MAPPING SỐ LÔ & GHI CHÚ) ---
