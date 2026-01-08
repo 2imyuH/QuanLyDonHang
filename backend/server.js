@@ -1,14 +1,15 @@
 const dns = require('dns');
-dns.setDefaultResultOrder('ipv4first'); 
-process.env.NODE_OPTIONS = '--dns-result-order=ipv4first';
+dns.setDefaultResultOrder('ipv4first');
+// --------------------------------------------------
 require('dotenv').config();
 const express = require('express');
 const cors = require('cors');
-const { Pool } = require('pg'); // Dùng Pool của Postgres
+const { Pool } = require('pg');
 const XLSX = require('xlsx');
 const ExcelJS = require('exceljs');
 const fs = require('fs');
 const multer = require('multer');
+const { URL } = require('url');
 
 const app = express();
 const upload = multer({ dest: 'uploads/' });
@@ -16,19 +17,73 @@ const upload = multer({ dest: 'uploads/' });
 app.use(cors({ origin: '*', methods: ['GET', 'POST', 'PUT', 'DELETE', 'PATCH'] }));
 app.use(express.json());
 
-// --- KẾT NỐI DATABASE CLOUD ---
-const pool = new Pool({
-    connectionString: process.env.DATABASE_URL,
-    ssl: { rejectUnauthorized: false } // Bắt buộc khi dùng Cloud (Supabase/Neon)
-});
+// --- HELPER: Resolve hostname to IPv4 ---
+const resolveIPv4 = (hostname) => {
+    return new Promise((resolve, reject) => {
+        dns.resolve4(hostname, (err, addresses) => {
+            if (err) reject(err);
+            else resolve(addresses[0]);
+        });
+    });
+};
 
-// Kiểm tra kết nối
-pool.connect((err) => {
-    if (err) console.error('❌ Lỗi kết nối Database:', err);
-    else console.log('✅ Đã kết nối PostgreSQL thành công!');
-});
+// --- KẾT NỐI DATABASE CLOUD (ASYNC INIT) ---
+let pool;
 
-// --- KHỞI TẠO BẢNG (NẾU CHƯA CÓ) ---
+const initPool = async () => {
+    try {
+        const dbUrl = new URL(process.env.DATABASE_URL);
+        const hostname = dbUrl.hostname;
+
+        let poolConfig;
+
+        // Kiểm tra nếu hostname không phải IPv4 address
+        if (!/^\d+\.\d+\.\d+\.\d+$/.test(hostname)) {
+            try {
+                const ipv4 = await resolveIPv4(hostname);
+                console.log(`🔄 Resolved ${hostname} -> ${ipv4}`);
+                
+                poolConfig = {
+                    user: dbUrl.username,
+                    password: dbUrl.password,
+                    host: ipv4,  // Dùng IPv4 trực tiếp
+                    port: parseInt(dbUrl.port) || 5432,
+                    database: dbUrl.pathname.slice(1),
+                    ssl: { rejectUnauthorized: false },
+                    connectionTimeoutMillis: 10000,
+                };
+            } catch (resolveErr) {
+                console.log('⚠️ Không resolve được IPv4, dùng connection string gốc');
+                poolConfig = {
+                    connectionString: process.env.DATABASE_URL,
+                    ssl: { rejectUnauthorized: false },
+                    connectionTimeoutMillis: 10000,
+                };
+            }
+        } else {
+            poolConfig = {
+                connectionString: process.env.DATABASE_URL,
+                ssl: { rejectUnauthorized: false },
+                connectionTimeoutMillis: 10000,
+            };
+        }
+
+        pool = new Pool(poolConfig);
+
+        // Kiểm tra kết nối
+        await pool.query('SELECT NOW()');
+        console.log('✅ Đã kết nối PostgreSQL thành công!');
+
+        // Khởi tạo bảng
+        await initDB();
+
+    } catch (err) {
+        console.error('❌ Lỗi kết nối Database:', err);
+        process.exit(1); // Thoát nếu không kết nối được DB
+    }
+};
+
+// --- KHỞI TẠO BẢNG ---
 const initDB = async () => {
     const createTableQuery = `
         CREATE TABLE IF NOT EXISTS orders (
@@ -48,7 +103,6 @@ const initDB = async () => {
         console.error("❌ Lỗi tạo bảng:", err);
     }
 };
-initDB();
 
 // --- HELPER FUNCTIONS ---
 const excelDateToJSDate = (serial) => {
@@ -101,13 +155,13 @@ const isSameIdentity = (obj1, obj2) => {
     return true;
 };
 
-// --- LOGIC XỬ LÝ (ASYNC/AWAIT CHO POSTGRES) ---
+// --- LOGIC XỬ LÝ ---
 const processImportLogic = async (workshop, rows) => {
     let inserted = 0, skipped = 0, updated = 0;
-    const client = await pool.connect(); // Lấy client từ pool để chạy transaction
+    const client = await pool.connect();
 
     try {
-        await client.query('BEGIN'); // Bắt đầu transaction
+        await client.query('BEGIN');
 
         for (const item of rows) {
             const { lot_number, data } = item;
@@ -116,7 +170,6 @@ const processImportLogic = async (workshop, rows) => {
             const newSig = normalizeData(data);
             const newDataFull = JSON.stringify(data);
 
-            // Tìm trong DB (Dùng $1, $2 thay vì ?)
             const res = await client.query("SELECT id, data FROM orders WHERE workshop = $1 AND lot_number = $2", [workshop, lot_number]);
             const existingRecords = res.rows;
             
@@ -143,17 +196,17 @@ const processImportLogic = async (workshop, rows) => {
             }
         }
 
-        await client.query('COMMIT'); // Lưu thay đổi
+        await client.query('COMMIT');
     } catch (e) {
-        await client.query('ROLLBACK'); // Hoàn tác nếu lỗi
+        await client.query('ROLLBACK');
         throw e;
     } finally {
-        client.release(); // Trả client về pool
+        client.release();
     }
     return { inserted, skipped, updated };
 };
 
-// --- API ROUTES (ASYNC) ---
+// --- API ROUTES ---
 app.get('/api/orders', async (req, res) => {
     const { workshop, status } = req.query;
     try {
@@ -210,17 +263,17 @@ app.get('/api/export', async (req, res) => {
         const jsonData = result.rows.map((r, index) => {
             const parsed = JSON.parse(r.data || '{}');
             delete parsed['STT']; delete parsed['stt'];
-            return { "STT": index + 1, "SỐ LÔ": r.lot_number, ...parsed };
+            return { "STT": index + 1, "Số LÔ": r.lot_number, ...parsed };
         });
 
         const wb = new ExcelJS.Workbook();
         const worksheet = wb.addWorksheet('Data');
 
-        const ORDER_KEYS = ["STT", "MÀU", "GHI CHÚ", "HỒI ẨM", "NGÀY XUỐNG ĐƠN", "SẢN PHẨM", "SỐ LÔ", "CHI SỐ", "SỐ LƯỢNG", "BẮT ĐẦU", "KẾT THÚC", "FU CUNG CÚI", "THỰC TẾ HOÀN THÀNH", "SO MÀU", "THAY ĐỔI", "LBS", "ghi chú", "ghi chú (1)"];
+        const ORDER_KEYS = ["STT", "MÀU", "GHI CHÚ", "HỒI ẨM", "NGÀY XUỐNG ĐƠN", "SẢN PHẨM", "Số LÔ", "CHI SỐ", "SỐ LƯỢNG", "BẮT ĐẦU", "KẾT THÚC", "FU CUNG CÚI", "THỰC TẾ HOÀN THÀNH", "SO MÀU", "THAY ĐỔI", "LBS", "ghi chú", "ghi chú (1)"];
         const HEADER_MAP = {
             "GHI CHÚ": "Ghi chú 1", "ghi chú": "Ghi chú 2", "ghi chú (1)": "Ghi chú 3",
             "NGÀY XUỐNG ĐƠN": "Ngày xuống đơn", "SỐ LƯỢNG": "Số Lượng",
-            "BẮT ĐẦU": "Bắt Đầu", "KẾT THÚC": "Kết Thúc", "SỐ LÔ": "Số Lô", "SẢN PHẨM": "Sản Phẩm",
+            "BẮT ĐẦU": "Bắt Đầu", "KẾT THÚC": "Kết Thúc", "Số LÔ": "Số Lô", "SẢN PHẨM": "Sản Phẩm",
             "CHI SỐ": "Chi Số", "MÀU": "Màu", "THAY ĐỔI": "Thay Đổi", "SO MÀU": "So Màu", "HỒI ẨM": "Hồi ẩm",
             "FU CUNG CÚI": "Fu Cung Cúi", "THỰC TẾ HOÀN THÀNH": "Thực Tế"
         };
@@ -267,7 +320,7 @@ app.post('/api/import', upload.single('file'), async (req, res) => {
             if (JSON.stringify(aoa[i]).toUpperCase().includes('SỐ LÔ')) { headerIdx = i; break; }
         }
 
-        if (headerIdx === -1) { fs.unlinkSync(filePath); return res.status(400).json({ error: "Lỗi file: Không tìm thấy cột SỐ LÔ" }); }
+        if (headerIdx === -1) { fs.unlinkSync(filePath); return res.status(400).json({ error: "Lỗi file: Không tìm thấy cột Số Lô" }); }
 
         const rawHeaders = aoa[headerIdx];
         if (!isForce) {
@@ -284,7 +337,7 @@ app.post('/api/import', upload.single('file'), async (req, res) => {
             let name = (h && String(h).trim() !== '') ? String(h).trim() : '';
             const upperName = name.toUpperCase();
 
-            if (upperName.includes('SỐ LÔ')) name = 'SỐ LÔ';
+            if (upperName.includes('SỐ LÔ')) name = 'Số LÔ';
             else if (upperName.includes('SẢN PHẨM')) name = 'SẢN PHẨM';
             else if (upperName.includes('MÀU') && !upperName.includes('SO')) name = 'MÀU';
             else if (upperName.includes('SO MÀU')) name = 'SO MÀU';
@@ -309,7 +362,7 @@ app.post('/api/import', upload.single('file'), async (req, res) => {
             uniqueHeaders.push(name);
         });
 
-        const lotColIndex = uniqueHeaders.findIndex(h => h === 'SỐ LÔ');
+        const lotColIndex = uniqueHeaders.findIndex(h => h === 'Số LÔ');
         const processedRows = [];
 
         for (let i = headerIdx + 1; i < aoa.length; i++) {
@@ -350,5 +403,17 @@ app.post('/api/orders/batch', async (req, res) => {
     } catch (e) { res.status(500).json({ error: e.message }); }
 });
 
+// --- HEALTH CHECK ---
+app.get('/health', (req, res) => {
+    res.json({ status: 'ok', timestamp: new Date().toISOString() });
+});
+
+// --- START SERVER (Đợi pool khởi tạo xong) ---
 const PORT = process.env.PORT || 3001;
-app.listen(PORT, () => console.log(`🚀 Server running on port ${PORT}`));
+
+initPool().then(() => {
+    app.listen(PORT, () => console.log(`🚀 Server running on port ${PORT}`));
+}).catch(err => {
+    console.error('❌ Không thể khởi động server:', err);
+    process.exit(1);
+});
