@@ -5,10 +5,10 @@ require('dotenv').config();
 const express = require('express');
 const cors = require('cors');
 const { Pool } = require('pg');
-const XLSX = require('xlsx');
 const ExcelJS = require('exceljs');
 const fs = require('fs');
 const multer = require('multer');
+const XLSX = require('xlsx');
 
 const app = express();
 const upload = multer({ dest: 'uploads/' });
@@ -87,7 +87,6 @@ const toStr = (val) => { if (val === null || val === undefined) return ""; retur
 const normalizeData = (obj) => {
     const cleanObj = {};
     Object.keys(obj).sort().forEach(key => {
-        // LOẠI BỎ NGÀY CẬP NHẬT KHỎI VIỆC SO SÁNH
         if (['STT', 'stt', 'id', 'workshop', 'lot_number', 'status', 'created_at', 'updated_at', 'SKIP_UPDATE', 'Ngày Cập Nhật'].includes(key)) return;
         if (key.startsWith('Hồi ẩm (')) return;
         let val = toStr(obj[key]);
@@ -105,7 +104,7 @@ const isSameIdentity = (obj1, obj2) => {
     return true;
 };
 
-// --- LOGIC XỬ LÝ ---
+// --- LOGIC XỬ LÝ IMPORT ---
 const processImportLogic = async (workshop, rows) => {
     let inserted = 0, skipped = 0, updated = 0;
     const client = await pool.connect();
@@ -114,7 +113,7 @@ const processImportLogic = async (workshop, rows) => {
         for (const item of rows) {
             const { lot_number, data } = item;
             
-            // Xóa các cột không cần thiết trước khi xử lý
+            // Xóa các cột hệ thống và cột cập nhật
             delete data['STT']; delete data['stt']; 
             delete data['SKIP_UPDATE']; delete data['updated_at']; delete data['Ngày Cập Nhật'];
 
@@ -129,9 +128,9 @@ const processImportLogic = async (workshop, rows) => {
                 if (isSameIdentity(oldData, data)) {
                     const oldSig = normalizeData(oldData);
                     if (oldSig === newSig) { 
-                        skipped++; // Giống hệt -> Giữ nguyên (Ngày cập nhật cũ)
+                        skipped++; // Dữ liệu giống hệt -> Giữ nguyên
                     } else { 
-                        // Khác nhau -> Update -> Ngày cập nhật MỚI (NOW())
+                        // Dữ liệu thay đổi -> Update -> cập nhật updated_at = NOW()
                         await client.query("UPDATE orders SET data = $1, updated_at = NOW() WHERE id = $2", [newDataFull, record.id]); 
                         updated++; 
                     }
@@ -176,7 +175,6 @@ app.put('/api/orders/:id', async (req, res) => {
     const { id } = req.params;
     const { id: _id, workshop, lot_number, status, created_at, updated_at, ...excelData } = req.body;
     try {
-        // Sửa thủ công -> Cập nhật ngày giờ
         await pool.query('UPDATE orders SET data = $1, updated_at = NOW() WHERE id = $2', [JSON.stringify(excelData), id]);
         res.json({ success: true });
     } catch (e) { res.status(500).json({ error: e.message }); }
@@ -192,7 +190,7 @@ app.patch('/api/orders/:id/status', async (req, res) => {
     catch (e) { res.status(500).json({ error: e.message }); }
 });
 
-// --- API EXPORT (ĐÃ CẤU HÌNH THỨ TỰ CỘT GIỐNG HỆT GIAO DIỆN) ---
+// --- API EXPORT (ĐÃ CHỈNH LẠI THỨ TỰ CỘT CHO KHỚP GIAO DIỆN) ---
 app.get('/api/export', async (req, res) => {
     try {
         const { workshop, status } = req.query;
@@ -202,22 +200,41 @@ app.get('/api/export', async (req, res) => {
         const jsonData = result.rows.map((r, index) => {
             const parsed = JSON.parse(r.data || '{}');
             delete parsed['STT']; delete parsed['stt'];
-            // KHÔNG export updated_at
-            return { 
-                "STT": index + 1, 
-                "SỐ LÔ": r.lot_number, 
-                ...parsed 
-            };
+            return { "STT": index + 1, "SỐ LÔ": r.lot_number, ...parsed };
         });
 
         const wb = new ExcelJS.Workbook();
         const worksheet = wb.addWorksheet('Data');
 
-        // --- DANH SÁCH THỨ TỰ CỘT (Copy chuẩn từ App.js) ---
+        // --- CẤU HÌNH THỨ TỰ CỘT CHÍNH XÁC (Ghi chú 2,3 ở cuối) ---
         const COLUMNS_CONFIG = {
-            'AA': ["STT", "MÀU", "GHI CHÚ", "HỒI ẨM", "NGÀY XUỐNG ĐƠN", "SẢN PHẨM", "SỐ LÔ", "CHI SỐ", "SỐ LƯỢNG", "BẮT ĐẦU", "KẾT THÚC", "THAY ĐỔI", "SO MÀU", "ghi chú", "ghi chú (1)"],
-            'AB': ["STT", "MÀU", "GHI CHÚ", "HỒI ẨM", "NGÀY XUỐNG ĐƠN", "SẢN PHẨM", "SỐ LÔ", "CHI SỐ", "SỐ LƯỢNG", "BẮT ĐẦU", "KẾT THÚC", "THAY ĐỔI", "SO MÀU", "ghi chú", "ghi chú (1)"],
-            'OE': ["STT", "MÀU", "GHI CHÚ", "HỒI ẨM", "NGÀY XUỐNG ĐƠN", "SẢN PHẨM", "SỐ LÔ", "CHI SỐ", "SỐ LƯỢNG", "BẮT ĐẦU", "KẾT THÚC", "FU CUNG CÚI", "THỰC TẾ HOÀN THÀNH", "SO MÀU", "ghi chú", "ghi chú (1)"]
+            'AA': [
+                "STT", 
+                "MÀU", 
+                "GHI CHÚ", // Ghi chú 1
+                "HỒI ẨM", 
+                "NGÀY XUỐNG ĐƠN", 
+                "SẢN PHẨM", 
+                "SỐ LÔ", 
+                "CHI SỐ", 
+                "SỐ LƯỢNG", 
+                "BẮT ĐẦU", 
+                "KẾT THÚC", 
+                "THAY ĐỔI", 
+                "SO MÀU", 
+                "ghi chú",     // Ghi chú 2 (Ở CUỐI)
+                "ghi chú (1)"  // Ghi chú 3 (Ở CUỐI)
+            ],
+            'AB': [
+                "STT", "MÀU", "GHI CHÚ", "HỒI ẨM", "NGÀY XUỐNG ĐƠN", "SẢN PHẨM", 
+                "SỐ LÔ", "CHI SỐ", "SỐ LƯỢNG", "BẮT ĐẦU", "KẾT THÚC", "THAY ĐỔI", 
+                "SO MÀU", "ghi chú", "ghi chú (1)"
+            ],
+            'OE': [
+                "STT", "MÀU", "GHI CHÚ", "HỒI ẨM", "NGÀY XUỐNG ĐƠN", "SẢN PHẨM", 
+                "SỐ LÔ", "CHI SỐ", "SỐ LƯỢNG", "BẮT ĐẦU", "KẾT THÚC", "FU CUNG CÚI", 
+                "THỰC TẾ HOÀN THÀNH", "SO MÀU", "ghi chú", "ghi chú (1)"
+            ]
         };
 
         const targetOrder = COLUMNS_CONFIG[currentWorkshop] || COLUMNS_CONFIG['AA'];
@@ -234,8 +251,6 @@ app.get('/api/export', async (req, res) => {
         jsonData.forEach(item => Object.keys(item).forEach(k => allKeys.add(k)));
         
         const sortedKeys = Array.from(allKeys).sort((a, b) => {
-            // Logic sắp xếp theo targetOrder
-            // So sánh cả key thường và key IN HOA để đảm bảo khớp
             const indexA = targetOrder.findIndex(key => key === a || key === a.toUpperCase());
             const indexB = targetOrder.findIndex(key => key === b || key === b.toUpperCase());
             
@@ -280,7 +295,7 @@ app.get('/api/export', async (req, res) => {
     } catch (e) { console.error(e); res.status(500).send(e.message); }
 });
 
-// --- API IMPORT ĐA SHEET ---
+// --- API IMPORT ĐA SHEET (BỎ QUA CỘT CẬP NHẬT) ---
 app.post('/api/import', upload.single('file'), async (req, res) => {
     if (!req.file) return res.status(400).send("No file.");
     const filePath = req.file.path;
@@ -335,7 +350,7 @@ app.post('/api/import', upload.single('file'), async (req, res) => {
                     else if (noteCounter === 3) name = 'ghi chú (1)';
                     else name = `GHI CHÚ (${noteCounter})`;
                 }
-                // NẾU CÓ CỘT NGÀY CẬP NHẬT TỪ FILE EXCEL -> GÁN TÊN ĐỂ BỎ QUA
+                // --- BỎ QUA CỘT CẬP NHẬT ---
                 else if (upperName.includes('CẬP NHẬT') || upperName.includes('UPDATED')) {
                     name = 'SKIP_UPDATE';
                 }
@@ -357,7 +372,7 @@ app.post('/api/import', upload.single('file'), async (req, res) => {
 
                 const rowObject = {};
                 mappedHeaders.forEach((header, index) => {
-                    if (header === 'SKIP_UPDATE') return; // BỎ QUA
+                    if (header === 'SKIP_UPDATE') return;
 
                     const val = rowData[index];
                     if (header.startsWith('COT_') && (val === '' || val == null)) return;
