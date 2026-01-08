@@ -245,51 +245,90 @@ app.patch('/api/orders/:id/status', async (req, res) => {
 // --- API EXPORT ---
 app.get('/api/export', async (req, res) => {
     try {
-        const { workshop, status } = req.query;
+        // --- SỬA: Lấy thêm tham số columns từ query ---
+        const { workshop, status, columns } = req.query; 
         const currentWorkshop = workshop || 'AA';
-        const result = await pool.query(`SELECT data, lot_number FROM orders WHERE workshop = $1 AND status = $2`, [currentWorkshop, status]);
+        
+        const result = await pool.query(
+            `SELECT data, lot_number, updated_at FROM orders WHERE workshop = $1 AND status = $2`, 
+            [currentWorkshop, status]
+        );
         
         const jsonData = result.rows.map((r, index) => {
             const parsed = JSON.parse(r.data || '{}');
             delete parsed['STT']; delete parsed['stt'];
-            return { "STT": index + 1, "SỐ LÔ": r.lot_number, ...parsed };
+            
+            // Format lại updated_at cho đẹp nếu xuất ra excel
+            let formattedUpdate = "";
+            if (r.updated_at) {
+                 const d = new Date(r.updated_at);
+                 // Chuyển sang giờ VN đơn giản
+                 formattedUpdate = d.toISOString().replace('T', ' ').substring(0, 16); 
+            }
+
+            // Trả về object bao gồm cả updated_at để Excel có thể nhận
+            return { 
+                "STT": index + 1, 
+                "SỐ LÔ": r.lot_number, 
+                "updated_at": formattedUpdate,
+                ...parsed 
+            };
         });
 
         const wb = new ExcelJS.Workbook();
         const worksheet = wb.addWorksheet('Data');
 
+        // --- CẤU HÌNH CŨ (Giữ lại để fallback nếu cần) ---
         const COLUMNS_CONFIG = {
             'AA': ["STT", "MÀU", "GHI CHÚ", "HỒI ẨM", "NGÀY XUỐNG ĐƠN", "SẢN PHẨM", "SỐ LÔ", "CHI SỐ", "SỐ LƯỢNG", "BẮT ĐẦU", "KẾT THÚC", "THAY ĐỔI", "SO MÀU", "ghi chú", "ghi chú (1)"],
             'AB': ["STT", "MÀU", "GHI CHÚ", "HỒI ẨM", "NGÀY XUỐNG ĐƠN", "SẢN PHẨM", "SỐ LÔ", "CHI SỐ", "SỐ LƯỢNG", "BẮT ĐẦU", "KẾT THÚC", "THAY ĐỔI", "SO MÀU", "ghi chú", "ghi chú (1)"],
             'OE': ["STT", "MÀU", "GHI CHÚ", "HỒI ẨM", "NGÀY XUỐNG ĐƠN", "SẢN PHẨM", "SỐ LÔ", "CHI SỐ", "SỐ LƯỢNG", "BẮT ĐẦU", "KẾT THÚC", "FU CUNG CÚI", "THỰC TẾ HOÀN THÀNH", "SO MÀU", "ghi chú", "ghi chú (1)"]
         };
-        const targetOrder = COLUMNS_CONFIG[currentWorkshop] || COLUMNS_CONFIG['AA'];
+
+        // --- LOGIC MỚI: ƯU TIÊN LẤY TỪ FRONTEND GỬI LÊN ---
+        let targetOrder = [];
+        if (columns) {
+            // Frontend gửi lên chuỗi: "MÀU,GHI CHÚ,..."
+            // Ta thêm "STT" vào đầu vì frontend không gửi STT
+            const colsFromClient = columns.split(',');
+            targetOrder = ["STT", ...colsFromClient];
+        } else {
+            targetOrder = COLUMNS_CONFIG[currentWorkshop] || COLUMNS_CONFIG['AA'];
+        }
 
         const HEADER_MAP = {
             "GHI CHÚ": "Ghi chú 1", "ghi chú": "Ghi chú 2", "ghi chú (1)": "Ghi chú 3",
             "NGÀY XUỐNG ĐƠN": "Ngày xuống đơn", "SỐ LƯỢNG": "Số Lượng",
             "BẮT ĐẦU": "Bắt Đầu", "KẾT THÚC": "Kết Thúc", "SỐ LÔ": "Số Lô", "SẢN PHẨM": "Sản Phẩm",
             "CHI SỐ": "Chi Số", "MÀU": "Màu", "THAY ĐỔI": "Thay Đổi", "SO MÀU": "So Màu", "HỒI ẨM": "Hồi ẩm",
-            "FU CUNG CÚI": "Fu Cung Cúi", "THỰC TẾ HOÀN THÀNH": "Thực Tế"
+            "FU CUNG CÚI": "Fu Cung Cúi", "THỰC TẾ HOÀN THÀNH": "Thực Tế",
+            "updated_at": "Cập Nhật" // Map thêm tên cột cập nhật
         };
 
         let allKeys = new Set();
         jsonData.forEach(item => Object.keys(item).forEach(k => allKeys.add(k)));
         
+        // Sắp xếp: Ưu tiên thứ tự trong targetOrder (chính là thứ tự màn hình), còn lại đẩy xuống cuối
         const sortedKeys = Array.from(allKeys).sort((a, b) => {
             const indexA = targetOrder.findIndex(key => key === a || key === a.toUpperCase());
             const indexB = targetOrder.findIndex(key => key === b || key === b.toUpperCase());
+            
             if (indexA !== -1 && indexB !== -1) return indexA - indexB;
-            if (indexA !== -1) return -1; if (indexB !== -1) return 1;
+            if (indexA !== -1) return -1; 
+            if (indexB !== -1) return 1;
+            
+            // Logic sắp xếp cột phụ (COT_1, COT_2...)
             const isCotA = a.startsWith('COT_'); const isCotB = b.startsWith('COT_');
             if (isCotA && isCotB) return (parseInt(a.replace('COT_', '') || 0) - parseInt(b.replace('COT_', '') || 0));
             if (isCotA) return 1; if (isCotB) return -1;
+            
             return a.localeCompare(b);
         });
 
         worksheet.columns = sortedKeys.map(key => ({ header: HEADER_MAP[key] || key, key: key }));
         worksheet.addRows(jsonData);
 
+        // ... (Giữ nguyên phần style ở dưới không đổi) ...
         const fontStyle = { name: 'Times New Roman', size: 12 };
         const borderStyle = { top: { style: 'thin' }, left: { style: 'thin' }, bottom: { style: 'thin' }, right: { style: 'thin' } };
         const alignStyle = { vertical: 'middle', horizontal: 'center', wrapText: true }; 
@@ -301,6 +340,8 @@ app.get('/api/export', async (req, res) => {
                 row.eachCell((cell) => { cell.font = { ...fontStyle, bold: true, color: { argb: 'FFFFFFFF' } }; cell.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FF1F4E78' } }; cell.alignment = { ...alignStyle, horizontal: 'center' }; });
             }
         });
+        
+        // Auto width
         worksheet.columns.forEach(column => { 
             let maxLength = 0; if (column.header) maxLength = column.header.length; 
             column.eachCell({ includeEmpty: true }, (cell, rowNumber) => { if (rowNumber > 50) return; const val = cell.value ? cell.value.toString() : ""; if (val.length > maxLength) maxLength = val.length; }); 
@@ -313,7 +354,6 @@ app.get('/api/export', async (req, res) => {
         res.send(buffer);
     } catch (e) { console.error(e); res.status(500).send(e.message); }
 });
-
 // --- API IMPORT ĐA SHEET ---
 app.post('/api/import', upload.single('file'), async (req, res) => {
     if (!req.file) return res.status(400).send("No file.");

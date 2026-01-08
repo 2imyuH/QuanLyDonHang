@@ -173,8 +173,35 @@ const App = () => {
       } catch (error) { message.error("Lỗi lưu dữ liệu"); } 
   };
 
-  const handleExport = async () => { try { message.loading("Xuất file...", 1); const res = await axios.get(`${API_URL}/api/export?workshop=${activeWorkshop}&status=${activeStatus}`, { responseType: 'blob' }); const url = window.URL.createObjectURL(new Blob([res.data])); const link = document.createElement('a'); link.href = url; const prefix = activeStatus === 'COMPLETED' ? 'DonOK' : 'DonSanXuat'; const fileName = `${prefix}_${activeWorkshop}_${dayjs().format('DDMM')}.xlsx`; link.setAttribute('download', fileName); document.body.appendChild(link); link.click(); message.success("Thành công!"); } catch (e) { message.error("Lỗi"); } };
-
+ const handleExport = async () => {
+  try {
+    message.loading("Xuất file...", 1);
+    
+    // --- THÊM MỚI: Lấy thứ tự cột hiện tại từ cấu hình ---
+    const configCols = MAIN_FIELDS[activeWorkshop] || [];
+    // Lấy list key, ví dụ: MAU, GHI CHÚ, ..., updated_at
+    const colKeys = configCols.map(c => c.key).join(','); 
+    
+    // Gửi kèm tham số &columns=... xuống server
+    const res = await axios.get(
+      `${API_URL}/api/export?workshop=${activeWorkshop}&status=${activeStatus}&columns=${encodeURIComponent(colKeys)}`, 
+      { responseType: 'blob' }
+    );
+    
+    const url = window.URL.createObjectURL(new Blob([res.data]));
+    const link = document.createElement('a');
+    link.href = url;
+    const prefix = activeStatus === 'COMPLETED' ? 'DonOK' : 'DonSanXuat';
+    const fileName = `${prefix}_${activeWorkshop}_${dayjs().format('DDMM')}.xlsx`;
+    link.setAttribute('download', fileName);
+    document.body.appendChild(link);
+    link.click();
+    message.success("Thành công!");
+  } catch (e) {
+    console.error(e);
+    message.error("Lỗi xuất file");
+  }
+};
   const handleImport = async (file, paramForce) => {
       const formData = new FormData();
       formData.append('file', file);
