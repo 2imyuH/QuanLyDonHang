@@ -30,6 +30,9 @@ const initPool = async () => {
             connectionString: connectionString,
             ssl: { rejectUnauthorized: false },
             connectionTimeoutMillis: 15000,
+            max: 20, // Tăng pool size
+            idleTimeoutMillis: 30000,
+            connectionTimeoutMillis: 10000,
         });
         const client = await pool.connect();
         await client.query('SELECT NOW()');
@@ -54,7 +57,19 @@ const initDB = async () => {
             updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
         );
     `;
-    try { await pool.query(createTableQuery); console.log("✅ Đã kiểm tra bảng orders."); } 
+    
+    // TẠO INDEX ĐỂ TĂNG TỐC ĐỘ QUERY
+    const createIndexes = `
+        CREATE INDEX IF NOT EXISTS idx_orders_workshop_status ON orders(workshop, status);
+        CREATE INDEX IF NOT EXISTS idx_orders_workshop_lot ON orders(workshop, lot_number);
+        CREATE INDEX IF NOT EXISTS idx_orders_status ON orders(status);
+    `;
+    
+    try { 
+        await pool.query(createTableQuery); 
+        await pool.query(createIndexes);
+        console.log("✅ Đã kiểm tra bảng orders và tạo indexes."); 
+    } 
     catch (err) { console.error("❌ Lỗi tạo bảng:", err); }
 };
 
@@ -96,14 +111,13 @@ const normalizeDateValue = (val) => {
     return String(val).trim();
 };
 
-const excelDateToJSDate = (val) => normalizeDateValue(val); // Wrapper alias
+const excelDateToJSDate = (val) => normalizeDateValue(val);
 
 const toStr = (val) => { if (val === null || val === undefined) return ""; return String(val).trim().toUpperCase(); };
 
 const normalizeData = (obj) => {
     const cleanObj = {};
     Object.keys(obj).sort().forEach(key => {
-        // Bỏ qua cột hệ thống để so sánh nội dung chính xác
         if (['STT', 'stt', 'id', 'workshop', 'lot_number', 'status', 'created_at', 'updated_at', 'SKIP_UPDATE', 'Ngày Cập Nhật'].includes(key)) return;
         if (key.startsWith('Hồi ẩm (')) return;
         let val = toStr(obj[key]);
@@ -113,7 +127,6 @@ const normalizeData = (obj) => {
 };
 
 // --- LOGIC ĐỊNH DANH (IDENTITY CHECK) ---
-// Hai dòng được coi là "cùng một loại hàng" nếu trùng: Sản Phẩm + Màu + Chi Số
 const isIdentityMatch = (dbData, excelData) => {
     const keys = ['SẢN PHẨM', 'MÀU', 'CHI SỐ'];
     for (const key of keys) {
@@ -122,14 +135,14 @@ const isIdentityMatch = (dbData, excelData) => {
     return true; 
 };
 
-// --- LOGIC XỬ LÝ IMPORT THÔNG MINH (CONSUMED ID) ---
+// --- LOGIC XỬ LÝ IMPORT THÔNG MINH (OPTIMIZED) ---
 const processImportLogic = async (workshop, rows) => {
     let inserted = 0, skipped = 0, updated = 0;
     const client = await pool.connect();
     try {
         await client.query('BEGIN');
         
-        // Gom nhóm dữ liệu theo Số Lô để xử lý một thể
+        // Gom nhóm dữ liệu theo Số Lô
         const rowsByLot = {};
         for(const item of rows) {
             const lot = item.lot_number;
@@ -137,18 +150,34 @@ const processImportLogic = async (workshop, rows) => {
             rowsByLot[lot].push(item);
         }
 
-        for (const lot of Object.keys(rowsByLot)) {
+        // LẤY TẤT CẢ DỮ LIỆU CẦN THIẾT CHỈ 1 QUERY DUY NHẤT
+        const allLots = Object.keys(rowsByLot);
+        const res = await client.query(
+            "SELECT id, lot_number, data FROM orders WHERE workshop = $1 AND lot_number = ANY($2)",
+            [workshop, allLots]
+        );
+        
+        // TỔ CHỨC DỮ LIỆU THEO LÔ ĐỂ TRUY CẬP NHANH
+        const dbRecordsByLot = {};
+        for(const row of res.rows) {
+            if(!dbRecordsByLot[row.lot_number]) dbRecordsByLot[row.lot_number] = [];
+            dbRecordsByLot[row.lot_number].push({
+                ...row,
+                parsedData: JSON.parse(row.data)
+            });
+        }
+
+        // CHUẨN BỊ BATCH QUERIES
+        const insertBatch = [];
+        const updateBatch = [];
+
+        for (const lot of allLots) {
             const excelItems = rowsByLot[lot];
-            
-            // Lấy tất cả bản ghi trong DB có cùng Số Lô
-            const res = await client.query("SELECT id, data FROM orders WHERE workshop = $1 AND lot_number = $2", [workshop, lot]);
-            const dbRecords = res.rows.map(r => ({ ...r, parsedData: JSON.parse(r.data) }));
-            
-            const usedDbIds = new Set(); // Danh sách ID đã được khớp (Consumed)
+            const dbRecords = dbRecordsByLot[lot] || [];
+            const usedDbIds = new Set();
 
             for (const item of excelItems) {
                 const { data } = item;
-                // Dọn dẹp dữ liệu rác
                 delete data['STT']; delete data['stt']; 
                 delete data['SKIP_UPDATE']; delete data['updated_at']; delete data['Ngày Cập Nhật'];
 
@@ -157,13 +186,13 @@ const processImportLogic = async (workshop, rows) => {
                 
                 let matchFound = false;
                 
-                // 1. Tìm bản ghi GIỐNG HỆT 100% (Ưu tiên Skip)
+                // 1. Tìm bản ghi GIỐNG HẾT 100%
                 for (const dbRecord of dbRecords) {
-                    if (usedDbIds.has(dbRecord.id)) continue; // Bỏ qua nếu đã dùng
+                    if (usedDbIds.has(dbRecord.id)) continue;
                     
                     const oldSig = normalizeData(dbRecord.parsedData);
                     if (oldSig === newSig) {
-                        usedDbIds.add(dbRecord.id); // Đánh dấu đã dùng
+                        usedDbIds.add(dbRecord.id);
                         skipped++;
                         matchFound = true;
                         break;
@@ -172,13 +201,12 @@ const processImportLogic = async (workshop, rows) => {
                 
                 if (matchFound) continue;
 
-                // 2. Tìm bản ghi CÙNG ĐỊNH DANH (Ưu tiên Update)
-                // Cùng Số Lô (đã lọc) + Cùng Sản Phẩm + Màu + Chi Số -> Thì chắc chắn là dòng này cần update
+                // 2. Tìm bản ghi CÙNG ĐỊNH DANH
                 for (const dbRecord of dbRecords) {
                     if (usedDbIds.has(dbRecord.id)) continue;
                     
                     if (isIdentityMatch(dbRecord.parsedData, data)) {
-                        await client.query("UPDATE orders SET data = $1, updated_at = NOW() WHERE id = $2", [newDataFull, dbRecord.id]);
+                        updateBatch.push({ id: dbRecord.id, data: newDataFull });
                         usedDbIds.add(dbRecord.id);
                         updated++;
                         matchFound = true;
@@ -189,13 +217,44 @@ const processImportLogic = async (workshop, rows) => {
                 if (matchFound) continue;
 
                 // 3. Không tìm thấy khớp nào -> Insert mới
-                await client.query("INSERT INTO orders (workshop, lot_number, data, status) VALUES ($1, $2, $3, 'ACTIVE')", [workshop, lot, newDataFull]);
+                insertBatch.push({ workshop, lot, data: newDataFull });
                 inserted++;
             }
         }
         
+        // THỰC HIỆN BATCH UPDATE (NHANH HƠN NHIỀU)
+        if (updateBatch.length > 0) {
+            const updateQuery = `
+                UPDATE orders SET 
+                    data = batch.data::text,
+                    updated_at = NOW()
+                FROM (SELECT unnest($1::int[]) as id, unnest($2::text[]) as data) as batch
+                WHERE orders.id = batch.id
+            `;
+            await client.query(updateQuery, [
+                updateBatch.map(u => u.id),
+                updateBatch.map(u => u.data)
+            ]);
+        }
+
+        // THỰC HIỆN BATCH INSERT (NHANH HƠN NHIỀU)
+        if (insertBatch.length > 0) {
+            const insertQuery = `
+                INSERT INTO orders (workshop, lot_number, data, status)
+                SELECT unnest($1::text[]), unnest($2::text[]), unnest($3::text[]), 'ACTIVE'
+            `;
+            await client.query(insertQuery, [
+                insertBatch.map(i => i.workshop),
+                insertBatch.map(i => i.lot),
+                insertBatch.map(i => i.data)
+            ]);
+        }
+        
         await client.query('COMMIT');
-    } catch (e) { await client.query('ROLLBACK'); throw e; } 
+    } catch (e) { 
+        await client.query('ROLLBACK'); 
+        throw e; 
+    } 
     finally { client.release(); }
     return { inserted, skipped, updated };
 };
@@ -204,13 +263,23 @@ const processImportLogic = async (workshop, rows) => {
 app.get('/api/orders', async (req, res) => {
     const { workshop, status } = req.query;
     try {
-        const result = await pool.query(`SELECT * FROM orders WHERE workshop = $1 AND status = $2 ORDER BY id ASC`, [workshop || 'AA', status || 'ACTIVE']);
+        // SỬ DỤNG INDEX ĐÃ TẠO
+        const result = await pool.query(
+            `SELECT * FROM orders WHERE workshop = $1 AND status = $2 ORDER BY id ASC`, 
+            [workshop || 'AA', status || 'ACTIVE']
+        );
         const rows = result.rows.map(row => ({
-            id: row.id, workshop: row.workshop, lot_number: row.lot_number, status: row.status, updated_at: row.updated_at,
+            id: row.id, 
+            workshop: row.workshop, 
+            lot_number: row.lot_number, 
+            status: row.status, 
+            updated_at: row.updated_at,
             ...JSON.parse(row.data || '{}')
         }));
         res.json(rows);
-    } catch (e) { res.status(500).json({ error: e.message }); }
+    } catch (e) { 
+        res.status(500).json({ error: e.message }); 
+    }
 });
 
 app.post('/api/orders', async (req, res) => {
@@ -233,12 +302,18 @@ app.put('/api/orders/:id', async (req, res) => {
 });
 
 app.delete('/api/orders/:id', async (req, res) => {
-    try { await pool.query("DELETE FROM orders WHERE id = $1", [req.params.id]); res.json({ success: true }); } 
+    try { 
+        await pool.query("DELETE FROM orders WHERE id = $1", [req.params.id]); 
+        res.json({ success: true }); 
+    } 
     catch (e) { res.status(500).json({ error: e.message }); }
 });
 
 app.patch('/api/orders/:id/status', async (req, res) => {
-    try { await pool.query("UPDATE orders SET status = $1, updated_at = NOW() WHERE id = $2", [req.body.status, req.params.id]); res.json({ success: true }); } 
+    try { 
+        await pool.query("UPDATE orders SET status = $1, updated_at = NOW() WHERE id = $2", [req.body.status, req.params.id]); 
+        res.json({ success: true }); 
+    } 
     catch (e) { res.status(500).json({ error: e.message }); }
 });
 
@@ -247,29 +322,33 @@ app.get('/api/export', async (req, res) => {
     try {
         const { workshop, status } = req.query;
         const currentWorkshop = workshop || 'AA';
-        const result = await pool.query(`SELECT data, lot_number FROM orders WHERE workshop = $1 AND status = $2`, [currentWorkshop, status]);
+        const result = await pool.query(
+            `SELECT data, lot_number FROM orders WHERE workshop = $1 AND status = $2`, 
+            [currentWorkshop, status]
+        );
         
         const jsonData = result.rows.map((r, index) => {
             const parsed = JSON.parse(r.data || '{}');
             delete parsed['STT']; delete parsed['stt'];
-            return { "STT": index + 1, "SỐ LÔ": r.lot_number, ...parsed };
+            return { "STT": index + 1, "Số LÔ": r.lot_number, ...parsed };
         });
 
         const wb = new ExcelJS.Workbook();
         const worksheet = wb.addWorksheet('Data');
 
+        // THỨ TỰ CỘT GIỐNG GIAO DIỆN
         const COLUMNS_CONFIG = {
-            'AA': ["STT", "MÀU", "GHI CHÚ", "HỒI ẨM", "NGÀY XUỐNG ĐƠN", "SẢN PHẨM", "SỐ LÔ", "CHI SỐ", "SỐ LƯỢNG", "BẮT ĐẦU", "KẾT THÚC", "THAY ĐỔI", "SO MÀU", "ghi chú", "ghi chú (1)"],
-            'AB': ["STT", "MÀU", "GHI CHÚ", "HỒI ẨM", "NGÀY XUỐNG ĐƠN", "SẢN PHẨM", "SỐ LÔ", "CHI SỐ", "SỐ LƯỢNG", "BẮT ĐẦU", "KẾT THÚC", "THAY ĐỔI", "SO MÀU", "ghi chú", "ghi chú (1)"],
-            'OE': ["STT", "MÀU", "GHI CHÚ", "HỒI ẨM", "NGÀY XUỐNG ĐƠN", "SẢN PHẨM", "SỐ LÔ", "CHI SỐ", "SỐ LƯỢNG", "BẮT ĐẦU", "KẾT THÚC", "FU CUNG CÚI", "THỰC TẾ HOÀN THÀNH", "SO MÀU", "ghi chú", "ghi chú (1)"]
+            'AA': ["STT", "MÀU", "GHI CHÚ", "HỒI ẨM", "NGÀY XUỐNG ĐƠN", "SẢN PHẨM", "Số LÔ", "CHI SỐ", "SỐ LƯỢNG", "BẮT ĐẦU", "KẾT THÚC", "THAY ĐỔI", "SO MẪU", "ghi chú", "ghi chú (1)"],
+            'AB': ["STT", "MÀU", "GHI CHÚ", "HỒI ẨM", "NGÀY XUỐNG ĐƠN", "SẢN PHẨM", "Số LÔ", "CHI SỐ", "SỐ LƯỢNG", "BẮT ĐẦU", "KẾT THÚC", "THAY ĐỔI", "SO MẪU", "ghi chú", "ghi chú (1)"],
+            'OE': ["STT", "MÀU", "GHI CHÚ", "HỒI ẨM", "NGÀY XUỐNG ĐƠN", "SẢN PHẨM", "Số LÔ", "CHI SỐ", "SỐ LƯỢNG", "BẮT ĐẦU", "KẾT THÚC", "FU CUNG CÚI", "THỰC TẾ HOÀN THÀNH", "SO MẪU", "ghi chú", "ghi chú (1)"]
         };
         const targetOrder = COLUMNS_CONFIG[currentWorkshop] || COLUMNS_CONFIG['AA'];
 
         const HEADER_MAP = {
             "GHI CHÚ": "Ghi chú 1", "ghi chú": "Ghi chú 2", "ghi chú (1)": "Ghi chú 3",
             "NGÀY XUỐNG ĐƠN": "Ngày xuống đơn", "SỐ LƯỢNG": "Số Lượng",
-            "BẮT ĐẦU": "Bắt Đầu", "KẾT THÚC": "Kết Thúc", "SỐ LÔ": "Số Lô", "SẢN PHẨM": "Sản Phẩm",
-            "CHI SỐ": "Chi Số", "MÀU": "Màu", "THAY ĐỔI": "Thay Đổi", "SO MÀU": "So Màu", "HỒI ẨM": "Hồi ẩm",
+            "BẮT ĐẦU": "Bắt Đầu", "KẾT THÚC": "Kết Thúc", "Số LÔ": "Số Lô", "SẢN PHẨM": "Sản Phẩm",
+            "CHI SỐ": "Chi Số", "MÀU": "Màu", "THAY ĐỔI": "Thay Đổi", "SO MẪU": "So Mẫu", "HỒI ẨM": "Hồi ẩm",
             "FU CUNG CÚI": "Fu Cung Cúi", "THỰC TẾ HOÀN THÀNH": "Thực Tế"
         };
 
@@ -349,10 +428,10 @@ app.post('/api/import', upload.single('file'), async (req, res) => {
                 let name = (h && String(h).trim() !== '') ? String(h).trim() : '';
                 const upperName = name.toUpperCase();
                 
-                if (upperName.includes('SỐ LÔ')) name = 'SỐ LÔ';
+                if (upperName.includes('SỐ LÔ')) name = 'Số LÔ';
                 else if (upperName.includes('SẢN PHẨM')) name = 'SẢN PHẨM';
                 else if (upperName.includes('MÀU') && !upperName.includes('SO')) name = 'MÀU';
-                else if (upperName.includes('SO MÀU')) name = 'SO MÀU';
+                else if (upperName.includes('SO MẪU')) name = 'SO MẪU';
                 else if (upperName.includes('CHI SỐ')) name = 'CHI SỐ';
                 else if (upperName.includes('SỐ LƯỢNG')) name = 'SỐ LƯỢNG';
                 else if (upperName.includes('BẮT ĐẦU')) name = 'BẮT ĐẦU';
@@ -380,7 +459,7 @@ app.post('/api/import', upload.single('file'), async (req, res) => {
                 mappedHeaders.push(name);
             });
 
-            const lotColIndex = mappedHeaders.findIndex(h => h === 'SỐ LÔ');
+            const lotColIndex = mappedHeaders.findIndex(h => h === 'Số LÔ');
             const processedRows = [];
 
             for (let i = headerIdx + 1; i < aoa.length; i++) {
@@ -399,7 +478,6 @@ app.post('/api/import', upload.single('file'), async (req, res) => {
                     const isSerialNum = typeof val === 'number' && val > 25569 && val < 2958465;
                     
                     if (val && (isDateCol || isSerialNum)) { 
-                        // CHUẨN HÓA NGÀY THÁNG ĐỂ TRÁNH LỖI SO SÁNH (DD/MM/YYYY -> YYYY-MM-DD)
                         rowObject[header] = normalizeDateValue(val); 
                     }
                     else { rowObject[header] = typeof val === 'boolean' ? String(val).toUpperCase() : val; }
