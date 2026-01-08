@@ -17,61 +17,32 @@ const upload = multer({ dest: 'uploads/' });
 app.use(cors({ origin: '*', methods: ['GET', 'POST', 'PUT', 'DELETE', 'PATCH'] }));
 app.use(express.json());
 
-// --- HELPER: Resolve hostname to IPv4 ---
-const resolveIPv4 = (hostname) => {
-    return new Promise((resolve, reject) => {
-        dns.resolve4(hostname, (err, addresses) => {
-            if (err) reject(err);
-            else resolve(addresses[0]);
-        });
-    });
-};
-
-// --- KẾT NỐI DATABASE CLOUD (ASYNC INIT) ---
+// --- GIẢI PHÁP CUỐI: Thêm family=4 vào connection string ---
 let pool;
 
 const initPool = async () => {
     try {
-        const dbUrl = new URL(process.env.DATABASE_URL);
-        const hostname = dbUrl.hostname;
-
-        let poolConfig;
-
-        // Kiểm tra nếu hostname không phải IPv4 address
-        if (!/^\d+\.\d+\.\d+\.\d+$/.test(hostname)) {
-            try {
-                const ipv4 = await resolveIPv4(hostname);
-                console.log(`🔄 Resolved ${hostname} -> ${ipv4}`);
-                
-                poolConfig = {
-                    user: dbUrl.username,
-                    password: dbUrl.password,
-                    host: ipv4,  // Dùng IPv4 trực tiếp
-                    port: parseInt(dbUrl.port) || 5432,
-                    database: dbUrl.pathname.slice(1),
-                    ssl: { rejectUnauthorized: false },
-                    connectionTimeoutMillis: 10000,
-                };
-            } catch (resolveErr) {
-                console.log('⚠️ Không resolve được IPv4, dùng connection string gốc');
-                poolConfig = {
-                    connectionString: process.env.DATABASE_URL,
-                    ssl: { rejectUnauthorized: false },
-                    connectionTimeoutMillis: 10000,
-                };
-            }
-        } else {
-            poolConfig = {
-                connectionString: process.env.DATABASE_URL,
-                ssl: { rejectUnauthorized: false },
-                connectionTimeoutMillis: 10000,
-            };
+        let connectionString = process.env.DATABASE_URL;
+        
+        // Thêm family=4 để bắt buộc IPv4
+        if (!connectionString.includes('family=')) {
+            const separator = connectionString.includes('?') ? '&' : '?';
+            connectionString = `${connectionString}${separator}family=4`;
         }
+        
+        console.log('🔗 Đang kết nối database với IPv4 only...');
+        
+        pool = new Pool({
+            connectionString: connectionString,
+            ssl: { rejectUnauthorized: false },
+            connectionTimeoutMillis: 15000,
+        });
 
-        pool = new Pool(poolConfig);
-
-        // Kiểm tra kết nối
-        await pool.query('SELECT NOW()');
+        // Test connection
+        const client = await pool.connect();
+        await client.query('SELECT NOW()');
+        client.release();
+        
         console.log('✅ Đã kết nối PostgreSQL thành công!');
 
         // Khởi tạo bảng
@@ -79,7 +50,11 @@ const initPool = async () => {
 
     } catch (err) {
         console.error('❌ Lỗi kết nối Database:', err);
-        process.exit(1); // Thoát nếu không kết nối được DB
+        console.error('💡 Hãy kiểm tra:');
+        console.error('   1. DATABASE_URL có đúng không?');
+        console.error('   2. Database có cho phép kết nối từ Render không?');
+        console.error('   3. Thử thêm ?family=4 vào cuối DATABASE_URL');
+        process.exit(1);
     }
 };
 
@@ -408,7 +383,7 @@ app.get('/health', (req, res) => {
     res.json({ status: 'ok', timestamp: new Date().toISOString() });
 });
 
-// --- START SERVER (Đợi pool khởi tạo xong) ---
+// --- START SERVER ---
 const PORT = process.env.PORT || 3001;
 
 initPool().then(() => {
