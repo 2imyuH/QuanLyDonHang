@@ -359,60 +359,79 @@ app.patch('/api/orders/:id/status', async (req, res) => {
 // --- API EXPORT - KHỚP 100% VỚI GIAO DIỆN ---
 app.get('/api/export', async (req, res) => {
     try {
-        const { workshop, status } = req.query;
+        const { workshop, status, colConfig } = req.query;
         const currentWorkshop = workshop || 'AA';
         
+        // 1. Parse cấu hình cột từ Client gửi lên
+        let columnsDef = [];
+        try {
+            if (colConfig) {
+                columnsDef = JSON.parse(colConfig);
+            }
+        } catch (e) {
+            console.error("Lỗi parse colConfig", e);
+        }
+
+        // Nếu không có config từ client (trường hợp fallback), dùng config mặc định server
+        if (columnsDef.length === 0) {
+             const workshopFields = MAIN_FIELDS[currentWorkshop] || MAIN_FIELDS['AA'];
+             columnsDef = [
+                 { key: 'STT', header: 'STT' },
+                 ...workshopFields.map(f => ({ key: f.key, header: f.label }))
+             ];
+        }
+
+        // 2. Query dữ liệu
         const result = await pool.query(
-            `SELECT data, lot_number, updated_at FROM orders WHERE workshop = $1 AND status = $2 ORDER BY id ASC`, 
+            `SELECT * FROM orders WHERE workshop = $1 AND status = $2 ORDER BY id ASC`, 
             [currentWorkshop, status]
         );
-        
-        // Lấy cấu hình cột theo workshop
-        const workshopFields = MAIN_FIELDS[currentWorkshop] || MAIN_FIELDS['AA'];
-        
-        // Tạo dữ liệu theo đúng thứ tự cột
-        const jsonData = result.rows.map((r, index) => {
-            const parsed = JSON.parse(r.data || '{}');
-            const rowData = { "STT": index + 1 };
-            
-            // Thêm dữ liệu theo đúng thứ tự cấu hình
-            workshopFields.forEach(field => {
-                if (field.key === 'updated_at') {
-                    // Format ngày cập nhật
-                    rowData[field.label] = r.updated_at ? formatDateTimeVN(r.updated_at) : '';
-                } else if (field.key === 'SỐ LÔ') {
-                    rowData[field.label] = r.lot_number;
-                } else {
-                    rowData[field.label] = parsed[field.key] || '';
-                }
-            });
-            
-            // Thêm các cột động (COT_X)
-            Object.keys(parsed).forEach(key => {
-                if (key.startsWith('COT_') && !workshopFields.find(f => f.key === key)) {
-                    rowData[key] = parsed[key];
-                }
-            });
-            
-            return rowData;
-        });
 
+        // 3. Chuẩn bị dữ liệu Excel
         const wb = new ExcelJS.Workbook();
         const worksheet = wb.addWorksheet('Data');
 
-        // Lấy tất cả keys theo thứ tự
-        const allKeys = jsonData.length > 0 ? Object.keys(jsonData[0]) : ['STT'];
-        
-        // Tạo columns
-        worksheet.columns = allKeys.map(key => ({ 
-            header: key, 
-            key: key,
-            width: key === 'STT' ? 6 : (key.length > 15 ? 20 : 15)
+        // Định nghĩa cột cho ExcelJS dựa trên columnsDef
+        worksheet.columns = columnsDef.map(col => ({
+            header: col.header,
+            key: col.key,
+            width: col.key === 'STT' ? 6 : (String(col.header).length > 15 ? 25 : 15)
         }));
-        
-        worksheet.addRows(jsonData);
 
-        // Định dạng
+        // Map dữ liệu vào từng dòng
+        const rowsToAdd = result.rows.map((row, index) => {
+            const parsedData = JSON.parse(row.data || '{}');
+            const rowObject = {};
+
+            columnsDef.forEach(col => {
+                const key = col.key;
+                
+                // Xử lý các trường đặc biệt
+                if (key === 'STT') {
+                    rowObject[key] = index + 1;
+                } 
+                else if (key === 'updated_at') {
+                    rowObject[key] = row.updated_at ? formatDateTimeVN(row.updated_at) : '';
+                } 
+                else if (key === 'SỐ LÔ') {
+                    // Ưu tiên lấy từ root record, nếu không có thì tìm trong json data
+                    rowObject[key] = row.lot_number || parsedData['SỐ LÔ'] || '';
+                } 
+                else {
+                    // Lấy dữ liệu từ JSON data
+                    // Cần xử lý trường hợp key khác nhau chút (ví dụ chữ hoa thường) nếu cần, 
+                    // nhưng logic hiện tại key đã đồng bộ từ frontend.
+                    let val = parsedData[key];
+                    if (val === undefined || val === null) val = '';
+                    rowObject[key] = val;
+                }
+            });
+            return rowObject;
+        });
+
+        worksheet.addRows(rowsToAdd);
+
+        // 4. Định dạng (Style) - Giữ nguyên logic đẹp như cũ
         const fontStyle = { name: 'Times New Roman', size: 12 };
         const borderStyle = { 
             top: { style: 'thin' }, 
@@ -433,6 +452,7 @@ app.get('/api/export', async (req, res) => {
                 cell.alignment = alignStyle; 
             });
             
+            // Header Style
             if (rowNumber === 1) { 
                 row.height = 30;
                 row.eachCell((cell) => { 
@@ -444,30 +464,18 @@ app.get('/api/export', async (req, res) => {
                     cell.fill = { 
                         type: 'pattern', 
                         pattern: 'solid', 
-                        fgColor: { argb: 'FF1F4E78' } 
+                        fgColor: { argb: 'FF1F4E78' } // Màu xanh đậm như file mẫu
                     }; 
                 });
             }
         });
 
-        // Auto-fit columns
-        worksheet.columns.forEach(column => { 
-            let maxLength = 0; 
-            if (column.header) maxLength = column.header.length; 
-            
-            column.eachCell({ includeEmpty: true }, (cell, rowNumber) => { 
-                if (rowNumber > 100) return; // Chỉ check 100 dòng đầu
-                const val = cell.value ? cell.value.toString() : ""; 
-                if (val.length > maxLength) maxLength = val.length; 
-            }); 
-            
-            column.width = Math.min(Math.max(maxLength + 3, 10), 50); 
-        });
-
+        // 5. Gửi file về client
         const buffer = await wb.xlsx.writeBuffer();
         res.setHeader('Content-Disposition', `attachment; filename="${currentWorkshop}_Export.xlsx"`);
         res.setHeader('Content-Type', 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet');
         res.send(buffer);
+
     } catch (e) { 
         console.error(e); 
         res.status(500).send(e.message); 

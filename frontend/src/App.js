@@ -1,5 +1,5 @@
 import React, { useState, useEffect, useCallback, useMemo } from 'react';
-import { Layout, Table, Tabs, Button, Form, Input, Popconfirm, Select, message, Space, Modal, Row, Col, Tag, Card, Divider, Tooltip, DatePicker, Upload, notification } from 'antd';
+import { Layout, Table, Tabs, Button, Form, Input, Popconfirm, Select, message, Space, Modal, Row, Col, Tag, Card, Divider, Tooltip, DatePicker, Upload, notification, Grid } from 'antd'; // Thêm Grid
 import { CheckCircleOutlined, RollbackOutlined, EditOutlined, DeleteOutlined, FileExcelOutlined, PlusOutlined, QuestionCircleOutlined, SearchOutlined, DownloadOutlined, UploadOutlined, SnippetsOutlined, WarningOutlined } from '@ant-design/icons';
 import axios from 'axios';
 import dayjs from 'dayjs';
@@ -7,11 +7,14 @@ import dayjs from 'dayjs';
 const { Header, Content } = Layout;
 const { Option } = Select;
 const { TextArea } = Input;
+const { useBreakpoint } = Grid; // Hook để check màn hình
 
 // === CẤU HÌNH API URL ===
 const API_URL = 'https://quanlydonhang-f6xq.onrender.com';
 
 const App = () => {
+  const screens = useBreakpoint(); // Lấy kích thước màn hình hiện tại (xs, sm, md, lg...)
+  
   const [activeWorkshop, setActiveWorkshop] = useState('AA');
   const [activeStatus, setActiveStatus] = useState('ACTIVE');
   const [data, setData] = useState([]);
@@ -33,7 +36,7 @@ const App = () => {
   useEffect(() => { setInputValue(''); setSearchText(''); }, [activeWorkshop]);
   useEffect(() => { const t = setTimeout(() => setSearchText(inputValue), 600); return () => clearTimeout(t); }, [inputValue]);
 
-  // --- CẤU HÌNH CỘT CHÍNH (ĐÃ SỬA KEY 'SỐ LÔ' IN HOA) ---
+  // --- CẤU HÌNH CỘT CHÍNH ---
   const MAIN_FIELDS = useMemo(() => ({
     'AA': [
       { key: 'MÀU', label: 'Màu', span: 6 },
@@ -41,7 +44,7 @@ const App = () => {
       { key: 'HỒI ẨM', label: 'Hồi ẩm', span: 6 }, 
       { key: 'NGÀY XUỐNG ĐƠN', label: 'Ngày xuống đơn', span: 8, type: 'date' },
       { key: 'SẢN PHẨM', label: 'Sản Phẩm', span: 16 },
-      { key: 'SỐ LÔ', label: 'Số Lô', span: 12, required: true }, // Đã sửa thành SỐ LÔ
+      { key: 'SỐ LÔ', label: 'Số Lô', span: 12, required: true },
       { key: 'CHI SỐ', label: 'Chi Số', span: 6 },
       { key: 'SỐ LƯỢNG', label: 'Số Lượng', span: 6 },
       { key: 'BẮT ĐẦU', label: 'Bắt Đầu', span: 12, type: 'date' },
@@ -58,7 +61,7 @@ const App = () => {
       { key: 'HỒI ẨM', label: 'Hồi ẩm', span: 6 }, 
       { key: 'NGÀY XUỐNG ĐƠN', label: 'Ngày xuống đơn', span: 8, type: 'date' },
       { key: 'SẢN PHẨM', label: 'Sản Phẩm', span: 16 },
-      { key: 'SỐ LÔ', label: 'Số Lô', span: 12, required: true }, // Đã sửa
+      { key: 'SỐ LÔ', label: 'Số Lô', span: 12, required: true },
       { key: 'CHI SỐ', label: 'Chi Số', span: 6 },
       { key: 'SỐ LƯỢNG', label: 'Số Lượng', span: 6 },
       { key: 'BẮT ĐẦU', label: 'Bắt Đầu', span: 12, type: 'date' },
@@ -75,7 +78,7 @@ const App = () => {
       { key: 'HỒI ẨM', label: 'Hồi ẩm', span: 6 },
       { key: 'NGÀY XUỐNG ĐƠN', label: 'Ngày xuống đơn', span: 8, type: 'date' },
       { key: 'SẢN PHẨM', label: 'Sản Phẩm', span: 16 },
-      { key: 'SỐ LÔ', label: 'Số Lô', span: 12, required: true }, // Đã sửa
+      { key: 'SỐ LÔ', label: 'Số Lô', span: 12, required: true },
       { key: 'CHI SỐ', label: 'Chi Số', span: 6 },
       { key: 'SỐ LƯỢNG', label: 'Số Lượng', span: 6 },
       { key: 'BẮT ĐẦU', label: 'Bắt Đầu', span: 12, type: 'date' },
@@ -173,7 +176,70 @@ const App = () => {
       } catch (error) { message.error("Lỗi lưu dữ liệu"); } 
   };
 
-  const handleExport = async () => { try { message.loading("Xuất file...", 1); const res = await axios.get(`${API_URL}/api/export?workshop=${activeWorkshop}&status=${activeStatus}`, { responseType: 'blob' }); const url = window.URL.createObjectURL(new Blob([res.data])); const link = document.createElement('a'); link.href = url; const prefix = activeStatus === 'COMPLETED' ? 'DonOK' : 'DonSanXuat'; const fileName = `${prefix}_${activeWorkshop}_${dayjs().format('DDMM')}.xlsx`; link.setAttribute('download', fileName); document.body.appendChild(link); link.click(); message.success("Thành công!"); } catch (e) { message.error("Lỗi"); } };
+  // --- SỬA LOGIC XUẤT EXCEL: Gửi cột sang server ---
+const handleExport = async () => {
+    try {
+        message.loading("Đang xuất file...", 1);
+        
+        // 1. Lấy cấu hình cột Chính (AA, AB, OE)
+        const configCols = MAIN_FIELDS[activeWorkshop] || [];
+        
+        // 2. Quét toàn bộ dữ liệu hiện tại để tìm tất cả các cột COT_ (để không bị sót)
+        const extraKeysSet = new Set();
+        data.forEach(record => {
+            Object.keys(record).forEach(key => {
+                // record chứa cả dữ liệu đã flatten, nên check trực tiếp
+                if (key && key.startsWith('COT_')) {
+                    extraKeysSet.add(key);
+                }
+            });
+        });
+
+        // Sắp xếp cột COT_ theo số (COT_1, COT_2... thay vì COT_1, COT_10)
+        const sortedExtraKeys = Array.from(extraKeysSet).sort((a, b) => {
+            const numA = parseInt(a.replace('COT_', '') || 0);
+            const numB = parseInt(b.replace('COT_', '') || 0);
+            return numA - numB;
+        });
+
+        // 3. Tạo mảng cấu hình cột gửi xuống Server
+        // Format: { key: 'KEY_TRONG_DATA', header: 'TÊN_HIỂN_THỊ_TRÊN_EXCEL' }
+        const exportColumns = [
+            { key: 'STT', header: 'STT' }, // Luôn có STT đầu tiên
+            ...configCols.map(c => ({ key: c.key, header: c.label })), // Các cột chính
+            ...sortedExtraKeys.map(k => ({ key: k, header: k })) // Các cột COT_
+        ];
+
+        // Chuyển object thành string để gửi qua query param
+        const columnsJson = JSON.stringify(exportColumns);
+
+        const res = await axios.get(
+            `${API_URL}/api/export`, 
+            { 
+                params: {
+                    workshop: activeWorkshop,
+                    status: activeStatus,
+                    colConfig: columnsJson // Gửi cấu hình cột xuống
+                },
+                responseType: 'blob' 
+            }
+        );
+        
+        const url = window.URL.createObjectURL(new Blob([res.data]));
+        const link = document.createElement('a');
+        link.href = url;
+        const prefix = activeStatus === 'COMPLETED' ? 'DonOK' : 'DonSanXuat';
+        const fileName = `${prefix}_${activeWorkshop}_${dayjs().format('DDMM')}.xlsx`;
+        link.setAttribute('download', fileName);
+        document.body.appendChild(link);
+        link.click();
+        
+        message.success("Xuất file thành công!");
+    } catch (e) {
+        console.error(e);
+        message.error("Lỗi khi xuất file");
+    }
+  };
 
   const handleImport = async (file, paramForce) => {
       const formData = new FormData();
@@ -189,19 +255,12 @@ const App = () => {
           if (res.data.warning) {
               Modal.confirm({
                   title: <span style={{color: 'orange'}}><WarningOutlined /> Cảnh báo lệch xưởng</span>,
-                  content: (
-                      <div>
-                          <p><b>{res.data.message}</b></p>
-                          <br/>
-                          <p>Bạn có chắc chắn muốn tiếp tục nhập excel không?</p>
-                      </div>
-                  ),
+                  content: (<div><p><b>{res.data.message}</b></p><br/><p>Bạn có chắc chắn muốn tiếp tục nhập excel không?</p></div>),
                   okText: "Vẫn Import", okType: 'danger', cancelText: "Hủy bỏ",
                   onOk: () => { handleImport(file, true); }
               });
               return false; 
           }
-          
           showResultNotification(res.data, 'Import file');
           invalidateCache(); 
       } catch (e) { 
@@ -249,23 +308,20 @@ const App = () => {
               return;
           }
       }
-      
       processPasteData(firstRowCells, validRows, delimiter, isHeaderRow);
   };
 
   const processPasteData = (firstRowCells, validRows, delimiter, isHeaderRow) => {
       let columnMapping = []; 
-      
       if (isHeaderRow) {
           message.success(`Đã nhận diện tiêu đề!`);
           let noteCounter = 0; 
-
           columnMapping = firstRowCells.map(header => {
               if (!header) return null;
               const cleanHeader = header.replace(/"/g, '').trim(); 
               const upperName = cleanHeader.toUpperCase();
 
-              if (upperName.includes('SỐ LÔ')) return 'SỐ LÔ'; // Sửa thành SỐ LÔ
+              if (upperName.includes('SỐ LÔ')) return 'SỐ LÔ'; 
               if (upperName.includes('SẢN PHẨM')) return 'SẢN PHẨM';
               if (upperName.includes('MÀU') && !upperName.includes('SO')) return 'MÀU';
               if (upperName.includes('SO MÀU')) return 'SO MÀU';
@@ -296,7 +352,6 @@ const App = () => {
 
       const startIdx = isHeaderRow ? 1 : 0; 
       const parsedItems = [];
-
       for(let i = startIdx; i < validRows.length; i++) {
           const rowStr = validRows[i];
           const cells = rowStr.split(delimiter); 
@@ -315,7 +370,7 @@ const App = () => {
                   if (['SỐ LƯỢNG', 'HỒI ẨM', 'CHI SỐ', 'LBS'].includes(key) && val) val = val.replace(/,/g, '');
               }
               rowObj[key] = val;
-              if (key === 'SỐ LÔ') lotNumber = val; // Sửa thành SỐ LÔ
+              if (key === 'SỐ LÔ') lotNumber = val; 
           });
           if (lotNumber) parsedItems.push({ workshop: activeWorkshop, lot_number: lotNumber, data: rowObj });
       }
@@ -329,33 +384,38 @@ const App = () => {
           const res = await axios.post(`${API_URL}/api/orders/batch`, { items: previewData });
           message.destroy();
           showResultNotification(res.data, 'Paste dữ liệu');
-          setIsPasteModalVisible(false);
-          setPasteText('');
-          setPreviewData([]);
-          invalidateCache();
+          setIsPasteModalVisible(false); setPasteText(''); setPreviewData([]); invalidateCache();
       } catch (e) { message.error("Lỗi khi lưu dữ liệu"); }
   };
 
+  // --- RESPONSIVE FORM RENDER ---
   const renderForm = () => {
     const configCols = MAIN_FIELDS[activeWorkshop] || [];
     const configKeys = configCols.map(c => c.key);
-    // Ẩn cột SỐ LÔ, status... khỏi phần "Thêm" của form edit
     let extraKeys = []; if (editingRecord) extraKeys = Object.keys(editingRecord).filter(k => !configKeys.includes(k) && !['id', 'workshop', 'lot_number', 'status', 'created_at', 'updated_at'].includes(k));
+    
     return (
       <Form form={form} layout="vertical">
         <Divider orientation="left" style={{marginTop: 0, color: '#1890ff'}}>Thông tin chi tiết</Divider>
-        <Row gutter={16}>
+        <Row gutter={[16, 0]}> {/* Gutter responsive */}
           {configCols.map((field) => (
-            <Col span={field.span || 12} key={field.key}>
+            // XS: 24 (Full dòng), SM: 12 (1/2 dòng), MD: theo config
+            <Col xs={24} sm={12} md={field.span || 12} key={field.key}>
               <Form.Item name={field.key} label={field.label} rules={[{ required: field.required, message: '!' }]}>
-                {field.key === 'updated_at' ? <Input disabled /> // Không cho sửa ngày cập nhật
+                {field.key === 'updated_at' ? <Input disabled />
                 : field.type === 'area' ? <TextArea rows={2} /> 
                 : field.type === 'date' ? <DatePicker style={{width: '100%'}} format="DD/MM/YYYY" placeholder="Chọn ngày" />
                 : <Input disabled={!isAdding && field.key === 'SỐ LÔ'} />}
               </Form.Item>
             </Col>
           ))}
-          {extraKeys.map(key => (<Col span={8} key={key}><Form.Item name={key} label={<span style={{fontSize: 12, color: '#888'}}>{key} (Excel)</span>}><Input size="small" style={{background: '#fffbe6'}} /></Form.Item></Col>))}
+          {extraKeys.map(key => (
+            <Col xs={24} sm={12} md={8} key={key}>
+                <Form.Item name={key} label={<span style={{fontSize: 12, color: '#888'}}>{key} (Excel)</span>}>
+                    <Input size="small" style={{background: '#fffbe6'}} />
+                </Form.Item>
+            </Col>
+          ))}
         </Row>
       </Form>
     );
@@ -378,14 +438,11 @@ const App = () => {
     const extraKeysSet = new Set();
     data.slice(0, 50).forEach(record => { Object.keys(record).forEach(key => { if (!configKeys.includes(key) && !systemKeys.includes(key)) extraKeysSet.add(key); }); });
 
-    const sttCol = { title: 'STT', key: 'stt', width: 60, align: 'center', fixed: 'left', render: (t, r, i) => <b>{i + 1}</b> };
+    const sttCol = { title: 'STT', key: 'stt', width: 50, align: 'center', fixed: 'left', render: (t, r, i) => <b>{i + 1}</b> };
     const mainTableCols = configCols.map(f => ({
-      title: f.label, dataIndex: f.key, width: f.key === 'SỐ LÔ' ? 130 : 150, fixed: f.key === 'SỐ LÔ' ? 'left' : false,
+      title: f.label, dataIndex: f.key, width: f.key === 'SỐ LÔ' ? 120 : 140, fixed: f.key === 'SỐ LÔ' ? 'left' : false,
       render: (text) => {
-          // --- FORMAT NGÀY CẬP NHẬT: 10h44 08/01/2026 ---
-          if (f.key === 'updated_at' && text) {
-              return <span style={{color: '#888', fontSize: 12}}>{dayjs(text).format('HH[h]mm DD/MM/YYYY')}</span>;
-          }
+          if (f.key === 'updated_at' && text) return <span style={{color: '#888', fontSize: 11}}>{dayjs(text).format('HH[h]mm DD/MM')}</span>;
           if (f.key === 'SỐ LÔ') return <b style={{color: '#1890ff'}}>{text}</b>;
           if (f.key === 'HỒI ẨM' && text) return <span style={{fontWeight: 500}}>{!isNaN(parseFloat(text)) ? parseFloat(text).toFixed(2) : text}</span>;
           if (f.type === 'date' && text) { const d = dayjs(text); return d.isValid() ? d.format('DD/MM/YYYY') : text; }
@@ -394,8 +451,8 @@ const App = () => {
     }));
 
     const extraTableCols = Array.from(extraKeysSet).sort().map(key => ({
-        title: <Tooltip title={`Dữ liệu gốc: ${key}`}><span style={{color: '#888', fontStyle: 'italic'}}>{key} <QuestionCircleOutlined style={{fontSize: 10}}/></span></Tooltip>,
-        dataIndex: key, width: 120, 
+        title: <Tooltip title={key}><span style={{color: '#888'}}>{key.substring(0, 10)}..</span></Tooltip>,
+        dataIndex: key, width: 100, 
         render: (text) => {
             let displayVal = text;
             if (typeof text === 'boolean') displayVal = String(text).toUpperCase();
@@ -403,7 +460,7 @@ const App = () => {
         }
     }));
 
-    const actionCol = { title: 'Thao tác', key: 'action', fixed: 'right', width: 110, render: (_, rec) => ( <Space size="small"> <Button size="small" icon={<EditOutlined style={{color: '#faad14'}}/>} onClick={() => handleEdit(rec)} /> <Popconfirm title="Xóa?" onConfirm={() => handleDelete(rec.id)}><Button size="small" icon={<DeleteOutlined style={{color: 'red'}}/>}/></Popconfirm> {activeStatus === 'ACTIVE' ? <Popconfirm title="Xong?" onConfirm={() => switchStatus(rec.id, 'COMPLETED')}><Button size="small" icon={<CheckCircleOutlined style={{color: 'green'}}/>}/></Popconfirm> : <Popconfirm title="Khôi phục?" onConfirm={() => switchStatus(rec.id, 'ACTIVE')}><Button size="small" icon={<RollbackOutlined style={{color: 'blue'}}/>}/></Popconfirm> } </Space> ) };
+    const actionCol = { title: '#', key: 'action', fixed: 'right', width: 90, render: (_, rec) => ( <Space size={2}> <Button size="small" icon={<EditOutlined style={{color: '#faad14'}}/>} onClick={() => handleEdit(rec)} /> <Popconfirm title="Xóa?" onConfirm={() => handleDelete(rec.id)}><Button size="small" icon={<DeleteOutlined style={{color: 'red'}}/>}/></Popconfirm> {activeStatus === 'ACTIVE' ? <Popconfirm title="Xong?" onConfirm={() => switchStatus(rec.id, 'COMPLETED')}><Button size="small" icon={<CheckCircleOutlined style={{color: 'green'}}/>}/></Popconfirm> : <Popconfirm title="Khôi phục?" onConfirm={() => switchStatus(rec.id, 'ACTIVE')}><Button size="small" icon={<RollbackOutlined style={{color: 'blue'}}/>}/></Popconfirm> } </Space> ) };
     return [sttCol, ...mainTableCols, ...extraTableCols, actionCol];
   }, [data, activeWorkshop, activeStatus, MAIN_FIELDS, handleDelete, handleEdit, switchStatus]);
 
@@ -412,61 +469,102 @@ const App = () => {
       if (previewData.length > 0) {
           const firstItem = previewData[0].data;
           const extraKeys = Object.keys(firstItem).filter(k => k.startsWith('COT_')).sort((a, b) => (parseInt(a.replace('COT_', '')||0) - parseInt(b.replace('COT_', '')||0)));
-          const extraCols = extraKeys.map(key => ({ 
-              title: key, 
-              dataIndex: ['data', key], 
-              width: 80, 
-              render: (t) => {
-                  let val = t;
-                  if (typeof t === 'boolean') val = String(t).toUpperCase(); 
-                  return <span style={{fontSize: 12, color: '#888'}}>{val}</span>;
-              }
-          }));
+          const extraCols = extraKeys.map(key => ({ title: key, dataIndex: ['data', key], width: 80 }));
           return [...baseCols, ...extraCols];
       }
       return baseCols;
   };
 
+  // --- RESPONSIVE LAYOUT MAIN ---
   return (
     <Layout style={{ minHeight: '100vh', background: '#f0f2f5' }}>
-       <Header style={{ background: '#001529', padding: '0 20px', display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
-          <div style={{ color: 'white', fontSize: 18, fontWeight: 'bold' }}><FileExcelOutlined /> QUẢN LÝ SX</div>
-          <Select value={activeWorkshop} onChange={setActiveWorkshop} size="large" style={{ width: 150 }}>
+       {/* HEADER: Cho phép wrap trên mobile */}
+       <Header style={{ background: '#001529', padding: '0 10px', height: 'auto', minHeight: 64, display: 'flex', flexWrap: 'wrap', justifyContent: 'space-between', alignItems: 'center' }}>
+          <div style={{ color: 'white', fontSize: 18, fontWeight: 'bold', marginRight: 10 }}>
+            <FileExcelOutlined /> {screens.md ? 'QUẢN LÝ SX' : 'QLSX'}
+          </div>
+          <Select value={activeWorkshop} onChange={setActiveWorkshop} size="middle" style={{ width: 120 }}>
             <Option value="AA">Xưởng AA</Option> <Option value="AB">Xưởng AB</Option> <Option value="OE">Xưởng OE</Option>
           </Select>
        </Header>
-       <Content style={{ padding: '20px' }}>
-          <Card variant="borderless" style={{ borderRadius: 8 }}>
-            <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: 16, gap: 16 }}>
-                <Tabs activeKey={activeStatus} onChange={setActiveStatus} type="card" style={{marginBottom: 0}}
-                    items={[
-                        { key: 'ACTIVE', label: 'Đang sản xuất' },
-                        { key: 'COMPLETED', label: 'Đơn đã hoàn thành' }
-                    ]}
-                />
-                <div style={{display: 'flex', gap: 10, flex: 1, justifyContent: 'flex-end', alignItems: 'center'}}>
-                    <Space>
-                        <Button icon={<SnippetsOutlined />} onClick={() => setIsPasteModalVisible(true)}>Paste Excel</Button>
-                        <Button icon={<DownloadOutlined />} onClick={handleExport}>Xuất Excel</Button>
-                        <Upload beforeUpload={handleImport} showUploadList={false}><Button icon={<UploadOutlined />}>Nhập Excel</Button></Upload>
+
+       <Content style={{ padding: screens.md ? '20px' : '10px 5px' }}>
+          <Card variant="borderless" style={{ borderRadius: 8 }} bodyStyle={{ padding: screens.md ? 24 : 10 }}>
+            
+            {/* TOOLBAR: Dùng Row/Col để stack trên mobile */}
+            <Row gutter={[10, 10]} style={{ marginBottom: 16 }} align="middle">
+                <Col xs={24} md={8}>
+                    <Tabs activeKey={activeStatus} onChange={setActiveStatus} type="card" style={{marginBottom: 0}}
+                        items={[{ key: 'ACTIVE', label: 'Đang SX' }, { key: 'COMPLETED', label: 'Hoàn thành' }]}
+                    />
+                </Col>
+                
+                <Col xs={24} md={16} style={{ textAlign: screens.md ? 'right' : 'left' }}>
+                    <Space wrap style={{ width: '100%', justifyContent: screens.md ? 'flex-end' : 'flex-start' }}>
+                        <Button icon={<SnippetsOutlined />} onClick={() => setIsPasteModalVisible(true)}>{screens.md ? 'Paste Excel' : 'Paste'}</Button>
+                        <Button icon={<DownloadOutlined />} onClick={handleExport}>{screens.md ? 'Xuất Excel' : 'Xuất'}</Button>
+                        <Upload beforeUpload={handleImport} showUploadList={false}>
+                            <Button icon={<UploadOutlined />}>{screens.md ? 'Nhập Excel' : 'Nhập'}</Button>
+                        </Upload>
+                        <Divider type="vertical" style={{ borderColor: '#999', display: screens.md ? 'inline' : 'none' }} />
+                        
+                        <Input 
+                            placeholder="Tìm kiếm..." 
+                            prefix={<SearchOutlined style={{color: '#555'}} />} 
+                            value={inputValue} 
+                            onChange={e => setInputValue(e.target.value)} 
+                            allowClear 
+                            style={{ width: screens.md ? 200 : '100%', minWidth: 150 }} // Full width mobile
+                        />
+                        <Button type="primary" icon={<PlusOutlined />} onClick={handleAddNew}>Thêm</Button>
                     </Space>
-                    <Divider type="vertical" style={{height: 30, borderColor: '#999'}} />
-                    <Input id="search-input" name="searchKeyword" placeholder="Tìm kiếm..." prefix={<SearchOutlined style={{color: '#555'}} />} value={inputValue} onChange={e => setInputValue(e.target.value)} allowClear size="middle" style={{ width: 250, borderColor: '#000' }} />
-                    <Button type="primary" icon={<PlusOutlined />} onClick={handleAddNew} size="middle">Thêm</Button>
-                </div>
-            </div>
-            <Table dataSource={filteredData} columns={columns} rowKey="id" loading={loading} bordered size="middle" scroll={{ x: 'max-content', y: 600 }} pagination={false} />
+                </Col>
+            </Row>
+
+            {/* TABLE: Tự động scroll ngang */}
+            <Table 
+                dataSource={filteredData} 
+                columns={columns} 
+                rowKey="id" 
+                loading={loading} 
+                bordered 
+                size="small" // Thu nhỏ table
+                scroll={{ x: 'max-content', y: 'calc(100vh - 280px)' }} // Tính toán chiều cao
+                pagination={false} 
+            />
           </Card>
        </Content>
        
-       <Modal title={isAdding ? "Thêm Mới" : <span>Sửa: <Tag color="blue">{editingRecord?.['SỐ LÔ']}</Tag></span>} open={isModalVisible} onOk={handleSave} onCancel={() => setIsModalVisible(false)} width={900} okText="Lưu" cancelText="Hủy" maskClosable={false}>{renderForm()}</Modal>
+       {/* MODAL: Full width trên mobile */}
+       <Modal 
+            title={isAdding ? "Thêm Mới" : <span>Sửa: <Tag color="blue">{editingRecord?.['SỐ LÔ']}</Tag></span>} 
+            open={isModalVisible} 
+            onOk={handleSave} 
+            onCancel={() => setIsModalVisible(false)} 
+            width={screens.md ? 900 : '100%'} // Responsive width
+            style={{ top: screens.md ? 100 : 0, padding: screens.md ? 0 : 10 }}
+            okText="Lưu" cancelText="Hủy" maskClosable={false}
+        >
+            {renderForm()}
+        </Modal>
        
-       <Modal title="Dán dữ liệu từ Excel (Copy và Paste)" open={isPasteModalVisible} onCancel={() => setIsPasteModalVisible(false)} width={1000} footer={[<Button key="close" onClick={() => setIsPasteModalVisible(false)}>Hủy</Button>, <Button key="parse" onClick={handleProcessPaste} type="primary" ghost>Phân tích</Button>, <Button key="save" type="primary" onClick={handleSavePaste} disabled={previewData.length === 0}>Lưu ({previewData.length})</Button>]}>
+       <Modal 
+            title="Dán dữ liệu Excel" 
+            open={isPasteModalVisible} 
+            onCancel={() => setIsPasteModalVisible(false)} 
+            width={screens.md ? 1000 : '100%'} // Responsive width
+            style={{ top: 20 }}
+            footer={[
+                <Button key="close" onClick={() => setIsPasteModalVisible(false)}>Hủy</Button>, 
+                <Button key="parse" onClick={handleProcessPaste} type="primary" ghost>Phân tích</Button>, 
+                <Button key="save" type="primary" onClick={handleSavePaste} disabled={previewData.length === 0}>Lưu</Button>
+            ]}
+        >
           <div style={{marginBottom: 10, color: 'red', fontStyle: 'italic', background: '#fff1f0', padding: '10px', border: '1px solid #ffa39e', borderRadius: '4px'}}>
-             <b>CHÚ Ý:</b> Copy cả dòng <b>TIÊU ĐỀ (Header)</b> trong Excel.
+             <b>CHÚ Ý:</b> Copy cả dòng <b>TIÊU ĐỀ</b>.
           </div>
-          <TextArea rows={8} placeholder="Paste (Ctrl + V)..." value={pasteText} onChange={e => setPasteText(e.target.value)} style={{whiteSpace: 'pre', overflow: 'auto'}} />
-          {previewData.length > 0 && (<div style={{marginTop: 20}}><h4>Kết quả phân tích:</h4><Table dataSource={previewData} rowKey="lot_number" size="small" scroll={{y: 300, x: 'max-content'}} pagination={false} columns={getPreviewColumns()} /></div>)}
+          <TextArea rows={5} placeholder="Paste (Ctrl + V)..." value={pasteText} onChange={e => setPasteText(e.target.value)} style={{whiteSpace: 'pre', overflow: 'auto'}} />
+          {previewData.length > 0 && (<div style={{marginTop: 20}}><h4>Kết quả:</h4><Table dataSource={previewData} rowKey="lot_number" size="small" scroll={{y: 200, x: 'max-content'}} pagination={false} columns={getPreviewColumns()} /></div>)}
        </Modal>
     </Layout>
   );
