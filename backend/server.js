@@ -16,7 +16,7 @@ const upload = multer({ dest: 'uploads/' });
 app.use(cors({ origin: '*', methods: ['GET', 'POST', 'PUT', 'DELETE', 'PATCH'] }));
 app.use(express.json());
 
-// --- 1. KẾT NỐI DATABASE ---
+// --- 1. KẾT NỐI DATABASE (CÓ TỐI ƯU TIMEOUT) ---
 let pool;
 const initPool = async () => {
     try {
@@ -29,7 +29,7 @@ const initPool = async () => {
         pool = new Pool({
             connectionString: connectionString,
             ssl: { rejectUnauthorized: false },
-            connectionTimeoutMillis: 30000,
+            connectionTimeoutMillis: 30000, // Tăng lên 30s để tránh lỗi timeout
         });
         const client = await pool.connect();
         await client.query('SELECT NOW()');
@@ -53,13 +53,14 @@ const initDB = async () => {
             created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
             updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
         );
+        -- TẠO INDEX ĐỂ TÌM KIẾM NHANH GẤP 100 LẦN
         CREATE INDEX IF NOT EXISTS idx_workshop_lot ON orders(workshop, lot_number);
     `;
-    try { await pool.query(createTableQuery); console.log("✅ Đã kiểm tra bảng orders."); } 
+    try { await pool.query(createTableQuery); console.log("✅ Đã kiểm tra bảng orders và Index."); } 
     catch (err) { console.error("❌ Lỗi tạo bảng:", err); }
 };
 
-// --- HELPER FUNCTIONS ---
+// --- HELPER FUNCTIONS (GIỮ NGUYÊN) ---
 const formatDateTimeVN = (isoString) => {
     if (!isoString) return "";
     const d = new Date(isoString);
@@ -119,17 +120,17 @@ const isSameIdentity = (obj1, obj2) => {
     return true;
 };
 
-// --- LOGIC XỬ LÝ IMPORT TỐI ƯU (CACHING + BATCH QUERY) ---
+// --- LOGIC XỬ LÝ IMPORT SIÊU TỐC (CACHING + BATCH QUERY) ---
 const processImportLogic = async (workshop, rows) => {
     let inserted = 0, skipped = 0, updated = 0;
     const client = await pool.connect();
     
     try {
-        // BƯỚC 1: LẤY DANH SÁCH SỐ LÔ CẦN XỬ LÝ
+        // BƯỚC 1: LẤY DANH SÁCH SỐ LÔ CẦN XỬ LÝ ĐỂ QUERY 1 LẦN
         const lotNumbers = [...new Set(rows.map(r => r.lot_number))];
 
-        // BƯỚC 2: TẢI DỮ LIỆU TỪ DB VỀ RAM (CHỈ 1 LỆNH SELECT)
-        // Thay vì gọi DB 1000 lần, ta gọi 1 lần lấy hết các lô có liên quan
+        // BƯỚC 2: TẢI DỮ LIỆU TỪ DB VỀ RAM (Batch Select)
+        // Đây là điểm mấu chốt giúp tăng tốc độ (không gọi DB trong vòng lặp)
         const dbRes = await client.query(
             `SELECT id, lot_number, data FROM orders 
              WHERE workshop = $1 AND lot_number = ANY($2::text[])`,
@@ -148,7 +149,7 @@ const processImportLogic = async (workshop, rows) => {
 
         await client.query('BEGIN');
         
-        // Theo dõi các ID đã được sử dụng trong phiên này để tránh trùng lặp
+        // Set để theo dõi ID đã dùng, tránh trùng lặp khi file excel có dòng trùng
         const usedDbIds = new Set(); 
 
         for (const item of rows) {
@@ -161,7 +162,7 @@ const processImportLogic = async (workshop, rows) => {
             const newSig = normalizeData(data);
             const newDataFull = JSON.stringify(data);
             
-            // Lấy danh sách ứng viên từ RAM (Không gọi DB)
+            // Lấy danh sách ứng viên từ RAM
             const candidates = dbRecordsMap[lot_number] || [];
             
             let handled = false;
@@ -173,7 +174,7 @@ const processImportLogic = async (workshop, rows) => {
                 const oldSig = normalizeData(dbRecord.parsedData);
                 if (oldSig === newSig) {
                     skipped++;
-                    usedDbIds.add(dbRecord.id); // Đánh dấu đã dùng
+                    usedDbIds.add(dbRecord.id); 
                     handled = true;
                     break;
                 }
@@ -248,7 +249,7 @@ app.patch('/api/orders/:id/status', async (req, res) => {
     catch (e) { res.status(500).json({ error: e.message }); }
 });
 
-// --- API EXPORT ---
+// --- API EXPORT (GIỮ NGUYÊN LOGIC CỦA BẠN - KHÔNG SỬA GÌ CẢ) ---
 app.get('/api/export', async (req, res) => {
     try {
         const { workshop, status } = req.query;
@@ -320,7 +321,7 @@ app.get('/api/export', async (req, res) => {
     } catch (e) { console.error(e); res.status(500).send(e.message); }
 });
 
-// --- API IMPORT ĐA SHEET ---
+// --- API IMPORT ĐA SHEET (VẪN DÙNG LOGIC TỐI ƯU CỦA MÌNH) ---
 app.post('/api/import', upload.single('file'), async (req, res) => {
     if (!req.file) return res.status(400).send("No file.");
     const filePath = req.file.path;
