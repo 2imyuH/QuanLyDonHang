@@ -389,7 +389,7 @@ app.get('/api/export', async (req, res) => {
 
         // 3. Chuẩn bị dữ liệu Excel
         const wb = new ExcelJS.Workbook();
-        const worksheet = wb.addWorksheet('Data');
+        const worksheet = wb.addWorksheet(currentWorkshop);
 
         // Định nghĩa cột cho ExcelJS dựa trên columnsDef
         worksheet.columns = columnsDef.map(col => ({
