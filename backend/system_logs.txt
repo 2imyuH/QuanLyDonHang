@@ -1,0 +1,78 @@
+[13:27:49 30/12/2025] EXPORT EXCEL: Xưởng: AA, Trạng thái: ACTIVE
+[13:28:56 30/12/2025] ĐỔI TRẠNG THÁI: ID: 1 -> COMPLETED
+[13:28:59 30/12/2025] EXPORT EXCEL: Xưởng: AA, Trạng thái: COMPLETED
+[13:29:20 30/12/2025] ĐỔI TRẠNG THÁI: ID: 1 -> ACTIVE
+[13:40:29 30/12/2025] ĐỔI TRẠNG THÁI: ID: 1 thành COMPLETED
+[13:40:38 30/12/2025] ĐỔI TRẠNG THÁI: ID: 1 thành ACTIVE
+[13:45:15 30/12/2025] EXPORT EXCEL: File: DonSanXuat_AA_3012.xlsx - 52 dòng
+[13:45:31 30/12/2025] ĐỔI TRẠNG THÁI: ID: 1 thành COMPLETED
+[13:45:39 30/12/2025] EXPORT EXCEL: File: DonOK_AA_3012.xlsx - 1 dòng
+[13:48:13 30/12/2025] STATUS: ID: 1
+[13:48:21 30/12/2025] EXPORT: File: DonSanXuat_AA_3012.xlsx
+[15:22:59 30/12/2025] EXPORT: File: DonSanXuat_AA_3012.xlsx
+[16:44:28 30/12/2025] EXPORT: File: DonSanXuat_AB_3012.xlsx
+[09:11:17 31/12/2025] STATUS: ID: 53
+[09:12:13 31/12/2025] STATUS: ID: 1
+[09:12:34 31/12/2025] STATUS: ID: 1
+[09:12:40 31/12/2025] STATUS: ID: 1
+[09:13:02 31/12/2025] STATUS: ID: 53
+[09:13:08 31/12/2025] STATUS: ID: 1
+[10:38:57 31/12/2025] STATUS: ID: 1
+[10:39:08 31/12/2025] STATUS: ID: 1
+[15:36:46 31/12/2025] EXPORT: File: DonSanXuat_AA_3112.xlsx
+[15:43:13 31/12/2025] EXPORT: File: DonSanXuat_AA_3112.xlsx
+[13:30:44 2/1/2026] EXPORT: File: DonSanXuat_AB_0201.xlsx
+[13:31:46 2/1/2026] STATUS: ID: 53
+[13:32:00 2/1/2026] EXPORT: File: DonSanXuat_AB_0201.xlsx
+[13:32:18 2/1/2026] EXPORT: File: DonOK_AB_0201.xlsx
+[13:33:17 2/1/2026] STATUS: ID: 53
+[13:35:26 2/1/2026] EXPORT: File: DonSanXuat_AB_0201.xlsx
+[13:37:50 2/1/2026] EXPORT: File: DonSanXuat_AA_0201.xlsx
+[13:42:33 2/1/2026] EXPORT: File: DonSanXuat_AA_0201.xlsx
+[13:43:46 2/1/2026] EXPORT: File: DonSanXuat_AA_0201.xlsx
+[14:05:17 2/1/2026] EXPORT: File: DonSanXuat_AB_0201.xlsx
+[11:21:55 3/1/2026] STATUS: ID: 1
+[11:22:18 3/1/2026] EXPORT: File: DonSanXuat_AA_0301.xlsx
+[13:17:54 3/1/2026] STATUS: ID: 1
+[16:31:05 3/1/2026] EXPORT: File: DonSanXuat_AA_0301.xlsx
+[16:36:35 3/1/2026] EXPORT: File: DonSanXuat_AA_0301.xlsx
+[08:20:26 5/1/2026] IMPORT: Thêm: 52, Sửa: 0, Bỏ: 0
+[08:23:51 5/1/2026] IMPORT: Thêm: 0, Sửa: 0, Bỏ: 52
+[08:24:12 5/1/2026] IMPORT: Thêm: 0, Sửa: 0, Bỏ: 52
+[08:26:08 5/1/2026] EXPORT: File: DonSanXuat_AA_0501.xlsx
+[08:29:33 5/1/2026] EXPORT: File: DonSanXuat_AA_0501.xlsx
+[08:34:39 5/1/2026] EXPORT: File: DonSanXuat_AA_0501.xlsx
+[08:35:02 5/1/2026] IMPORT: Thêm: 0, Sửa: 52, Bỏ: 0
+[08:35:08 5/1/2026] EXPORT: File: DonSanXuat_AA_0501.xlsx
+[08:40:04 5/1/2026] EXPORT: File: DonSanXuat_AA_0501.xlsx
+[08:40:15 5/1/2026] IMPORT: Thêm: 0, Sửa: 0, Bỏ: 52
+[08:49:59 5/1/2026] IMPORT: Thêm: 0, Sửa: 0, Bỏ: 52
+[08:50:15 5/1/2026] IMPORT: Thêm: 0, Sửa: 0, Bỏ: 52
+[08:51:55 5/1/2026] IMPORT: Thêm: 0, Sửa: 0, Bỏ: 52
+[08:52:20 5/1/2026] IMPORT: Thêm: 0, Sửa: 0, Bỏ: 52
+[08:54:19 5/1/2026] IMPORT: Thêm: 0, Sửa: 0, Bỏ: 52
+[08:58:04 5/1/2026] IMPORT: Thêm: 0, Sửa: 0, Bỏ: 52
+[09:00:21 5/1/2026] IMPORT: Thêm: 0, Sửa: 0, Bỏ: 52
+[09:21:21 5/1/2026] EXPORT: File: DonSanXuat_AA_0501.xlsx
+[09:24:13 5/1/2026] BATCH: Thêm: 2, Sửa: 0, Bỏ: 0
+[09:33:51 5/1/2026] BATCH: Thêm: 1, Sửa: 0, Bỏ: 1
+[09:35:04 5/1/2026] EXPORT: File: DonSanXuat_AA_0501.xlsx
+[09:39:07 5/1/2026] EXPORT: File: DonSanXuat_AA_0501.xlsx
+[09:46:26 5/1/2026] BATCH: Thêm: 0, Sửa: 0, Bỏ: 2
+[10:05:56 5/1/2026] EXPORT: File: DonSanXuat_OE_0501.xlsx
+[10:07:34 5/1/2026] BATCH: Thêm: 2, Sửa: 0, Bỏ: 0
+[10:52:02 5/1/2026] IMPORT: Thêm: 54, Sửa: 0, Bỏ: 0
+[10:55:44 5/1/2026] IMPORT: Thêm: 54, Sửa: 0, Bỏ: 0
+[10:56:33 5/1/2026] IMPORT: Thêm: 54, Sửa: 0, Bỏ: 0
+[11:00:56 5/1/2026] IMPORT: Thêm: 54, Sửa: 0, Bỏ: 0
+[11:05:17 5/1/2026] IMPORT: Thêm: 54, Sửa: 0, Bỏ: 0
+[11:10:11 5/1/2026] IMPORT: Thêm: 54, Sửa: 0, Bỏ: 0
+[11:13:08 5/1/2026] IMPORT: Thêm: 54, Sửa: 0, Bỏ: 0
+[11:14:13 5/1/2026] IMPORT: Thêm: 54, Sửa: 0, Bỏ: 0
+[11:17:34 5/1/2026] IMPORT: Thêm: 16, Sửa: 0, Bỏ: 0
+[11:18:44 5/1/2026] EXPORT: File: DonSanXuat_OE_0501.xlsx
+[11:18:50 5/1/2026] IMPORT: Thêm: 17, Sửa: 0, Bỏ: 0
+[13:10:05 5/1/2026] IMPORT: Thêm: 0, Sửa: 17, Bỏ: 0
+[16:54:00 5/1/2026] IMPORT: Thêm: 0, Sửa: 0, Bỏ: 16
+[08:50:09 6/1/2026] IMPORT: Thêm: 0, Sửa: 0, Bỏ: 52
+[09:04:49 6/1/2026] IMPORT: Thêm: 0, Sửa: 0, Bỏ: 52
