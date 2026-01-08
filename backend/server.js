@@ -1,11 +1,10 @@
 const dns = require('dns');
-dns.setDefaultResultOrder('ipv4first');
+dns.setDefaultResultOrder('ipv4first'); // Fix lỗi mạng Render
 // --------------------------------------------------
 require('dotenv').config();
 const express = require('express');
 const cors = require('cors');
 const { Pool } = require('pg');
-const XLSX = require('xlsx');
 const ExcelJS = require('exceljs');
 const fs = require('fs');
 const multer = require('multer');
@@ -16,7 +15,7 @@ const upload = multer({ dest: 'uploads/' });
 app.use(cors({ origin: '*', methods: ['GET', 'POST', 'PUT', 'DELETE', 'PATCH'] }));
 app.use(express.json());
 
-// --- KẾT NỐI DATABASE ---
+// --- 1. KẾT NỐI DATABASE (FIX IPV6) ---
 let pool;
 const initPool = async () => {
     try {
@@ -43,6 +42,7 @@ const initPool = async () => {
 };
 
 const initDB = async () => {
+    // Tạo bảng với cột updated_at
     const createTableQuery = `
         CREATE TABLE IF NOT EXISTS orders (
             id SERIAL PRIMARY KEY,
@@ -58,14 +58,13 @@ const initDB = async () => {
     catch (err) { console.error("❌ Lỗi tạo bảng:", err); }
 };
 
-// --- HÀM FORMAT GIỜ VIỆT NAM (FIX LỖI LỆCH GIỜ KHI EXPORT) ---
+// --- 2. HÀM FORMAT NGÀY GIỜ VIỆT NAM (10h44 08/01/2026) ---
 const formatDateTimeVN = (isoString) => {
     if (!isoString) return "";
     const d = new Date(isoString);
     if (isNaN(d.getTime())) return isoString;
 
-    // Server Render là UTC, ta phải cộng thêm 7 tiếng để ra giờ VN
-    // Dùng getUTC... sau khi cộng để đảm bảo chính xác tuyệt đối
+    // Cộng 7 tiếng để ra giờ VN (Vì Server Render là UTC+0)
     const vnTime = new Date(d.getTime() + 7 * 60 * 60 * 1000); 
 
     const hh = String(vnTime.getUTCHours()).padStart(2, '0');
@@ -100,7 +99,10 @@ const excelDateToJSDate = (serial) => {
     return String(serial).trim();
 };
 
-const toStr = (val) => { if (val === null || val === undefined) return ""; return String(val).trim().toUpperCase(); };
+const toStr = (val) => {
+    if (val === null || val === undefined) return "";
+    return String(val).trim().toUpperCase();
+};
 
 const normalizeData = (obj) => {
     const cleanObj = {};
@@ -118,10 +120,13 @@ const isSameIdentity = (obj1, obj2) => {
     const keys1 = Object.keys(obj1).filter(k => k.startsWith('COT_'));
     const keys2 = Object.keys(obj2).filter(k => k.startsWith('COT_'));
     const allCotKeys = new Set([...keys1, ...keys2]);
-    for (let key of allCotKeys) { if (toStr(obj1[key]) !== toStr(obj2[key])) return false; }
+    for (let key of allCotKeys) {
+        if (toStr(obj1[key]) !== toStr(obj2[key])) return false;
+    }
     return true;
 };
 
+// --- 3. LOGIC IMPORT THÔNG MINH (CHỈ UPDATE KHI CÓ SỰ THAY ĐỔI) ---
 const processImportLogic = async (workshop, rows) => {
     let inserted = 0, skipped = 0, updated = 0;
     const client = await pool.connect();
@@ -139,12 +144,18 @@ const processImportLogic = async (workshop, rows) => {
                 const oldData = JSON.parse(record.data);
                 if (isSameIdentity(oldData, data)) {
                     const oldSig = normalizeData(oldData);
-                    if (oldSig === newSig) { skipped++; } 
-                    else { await client.query("UPDATE orders SET data = $1, updated_at = NOW() WHERE id = $2", [newDataFull, record.id]); updated++; }
+                    if (oldSig === newSig) { 
+                        skipped++; // Dữ liệu giống hệt -> Bỏ qua -> Ngày cập nhật KHÔNG đổi
+                    } else { 
+                        // Dữ liệu khác -> Update -> Ngày cập nhật THAY ĐỔI (NOW())
+                        await client.query("UPDATE orders SET data = $1, updated_at = NOW() WHERE id = $2", [newDataFull, record.id]); 
+                        updated++; 
+                    }
                     handled = true; break;
                 }
             }
             if (!handled) {
+                // Thêm mới -> Ngày cập nhật = CURRENT_TIMESTAMP
                 await client.query("INSERT INTO orders (workshop, lot_number, data, status) VALUES ($1, $2, $3, 'ACTIVE')", [workshop, lot_number, newDataFull]);
                 inserted++;
             }
@@ -197,22 +208,23 @@ app.patch('/api/orders/:id/status', async (req, res) => {
     catch (e) { res.status(500).json({ error: e.message }); }
 });
 
-// --- API EXPORT (ĐÃ FIX: Múi giờ VN & Thứ tự cột) ---
+// --- 4. API EXPORT (FIX LỖI NHẢY CỘT & LỆCH GIỜ) ---
 app.get('/api/export', async (req, res) => {
     try {
         const { workshop, status } = req.query;
         const result = await pool.query(`SELECT data, lot_number, updated_at FROM orders WHERE workshop = $1 AND status = $2`, [workshop, status]);
+        
         const jsonData = result.rows.map((r, index) => {
             const parsed = JSON.parse(r.data || '{}');
             delete parsed['STT']; delete parsed['stt'];
             
-            // Format ngày giờ Việt Nam (+7)
+            // Format ngày giờ Việt Nam chuẩn (10h44 08/01/2026)
             const formattedUpdate = formatDateTimeVN(r.updated_at);
             
             return { 
                 "STT": index + 1, 
                 "SỐ LÔ": r.lot_number, 
-                "updated_at": formattedUpdate,
+                "Ngày Cập Nhật": formattedUpdate, // Đặt key Tiếng Việt trực tiếp để dễ Map
                 ...parsed 
             };
         });
@@ -220,37 +232,23 @@ app.get('/api/export', async (req, res) => {
         const wb = new ExcelJS.Workbook();
         const worksheet = wb.addWorksheet('Data');
 
-        // --- DANH SÁCH CỘT CHUẨN (VIẾT HOA HẾT ĐỂ SORT ĐÚNG) ---
+        // DANH SÁCH CỘT ƯU TIÊN (In Hoa)
         const ORDER_KEYS = [
-            "STT", 
-            "MÀU", 
-            "GHI CHÚ", 
-            "HỒI ẨM", 
-            "NGÀY XUỐNG ĐƠN", 
-            "SẢN PHẨM", 
-            "SỐ LÔ",  // Chú ý: SỐ LÔ (In hoa)
-            "CHI SỐ", 
-            "SỐ LƯỢNG", 
-            "BẮT ĐẦU", 
-            "KẾT THÚC", 
-            "THAY ĐỔI",
-            "FU CUNG CÚI",
-            "THỰC TẾ HOÀN THÀNH",
-            "SO MÀU", 
-            "ghi chú", 
-            "ghi chú (1)",
-            "UPDATED_AT" // Đổi thành IN HOA để khớp logic sort
+            "STT", "MÀU", "GHI CHÚ", "HỒI ẨM", "NGÀY XUỐNG ĐƠN", "SẢN PHẨM", 
+            "SỐ LÔ", // Fix vị trí số lô
+            "CHI SỐ", "SỐ LƯỢNG", "BẮT ĐẦU", "KẾT THÚC", 
+            "THAY ĐỔI", "FU CUNG CÚI", "THỰC TẾ HOÀN THÀNH", "SO MÀU", 
+            "ghi chú", "ghi chú (1)", 
+            "NGÀY CẬP NHẬT" // Fix vị trí ngày cập nhật
         ];
 
-        // Map tên hiển thị (Header)
         const HEADER_MAP = {
             "GHI CHÚ": "Ghi chú 1", "ghi chú": "Ghi chú 2", "ghi chú (1)": "Ghi chú 3",
             "NGÀY XUỐNG ĐƠN": "Ngày xuống đơn", "SỐ LƯỢNG": "Số Lượng",
             "BẮT ĐẦU": "Bắt Đầu", "KẾT THÚC": "Kết Thúc", "SỐ LÔ": "Số Lô", "SẢN PHẨM": "Sản Phẩm",
             "CHI SỐ": "Chi Số", "MÀU": "Màu", "THAY ĐỔI": "Thay Đổi", "SO MÀU": "So Màu", "HỒI ẨM": "Hồi ẩm",
             "FU CUNG CÚI": "Fu Cung Cúi", "THỰC TẾ HOÀN THÀNH": "Thực Tế",
-            "UPDATED_AT": "Ngày Cập Nhật", // Map key in hoa
-            "updated_at": "Ngày Cập Nhật"  // Map key thường (phòng hờ)
+            "Ngày Cập Nhật": "Ngày Cập Nhật"
         };
 
         let allKeys = new Set();
@@ -270,13 +268,13 @@ app.get('/api/export', async (req, res) => {
             const isCotA = a.startsWith('COT_');
             const isCotB = b.startsWith('COT_');
             if (isCotA && isCotB) return (parseInt(a.replace('COT_', '') || 0) - parseInt(b.replace('COT_', '') || 0));
-            if (isCotA) return 1; // COT_ xuống cuối
+            if (isCotA) return 1; 
             if (isCotB) return -1;
             
             return a.localeCompare(b);
         });
 
-        worksheet.columns = sortedKeys.map(key => ({ header: HEADER_MAP[key] || HEADER_MAP[key.toUpperCase()] || key, key: key }));
+        worksheet.columns = sortedKeys.map(key => ({ header: HEADER_MAP[key] || key, key: key }));
         worksheet.addRows(jsonData);
 
         // Style
@@ -286,7 +284,7 @@ app.get('/api/export', async (req, res) => {
 
         worksheet.eachRow((row, rowNumber) => {
             row.eachCell((cell) => {
-                cell.font = fontStyle; border: borderStyle; cell.alignment = alignStyle;
+                cell.font = fontStyle; cell.border = borderStyle; cell.alignment = alignStyle;
             });
             if (rowNumber === 1) {
                 row.height = 30;
@@ -312,6 +310,7 @@ app.get('/api/export', async (req, res) => {
     } catch (e) { console.error(e); res.status(500).send(e.message); }
 });
 
+// --- IMPORT (FIX MAPPING) ---
 app.post('/api/import', upload.single('file'), async (req, res) => {
     if (!req.file) return res.status(400).send("No file.");
     const filePath = req.file.path;
