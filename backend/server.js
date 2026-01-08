@@ -30,8 +30,6 @@ const initPool = async () => {
             connectionString: connectionString,
             ssl: { rejectUnauthorized: false },
             connectionTimeoutMillis: 15000,
-            max: 20,
-            idleTimeoutMillis: 30000,
         });
         const client = await pool.connect();
         await client.query('SELECT NOW()');
@@ -56,22 +54,11 @@ const initDB = async () => {
             updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
         );
     `;
-    
-    const createIndexes = `
-        CREATE INDEX IF NOT EXISTS idx_orders_workshop_status ON orders(workshop, status);
-        CREATE INDEX IF NOT EXISTS idx_orders_workshop_lot ON orders(workshop, lot_number);
-        CREATE INDEX IF NOT EXISTS idx_orders_status ON orders(status);
-    `;
-    
-    try { 
-        await pool.query(createTableQuery); 
-        await pool.query(createIndexes);
-        console.log("✅ Đã kiểm tra bảng orders và tạo indexes."); 
-    } 
+    try { await pool.query(createTableQuery); console.log("✅ Đã kiểm tra bảng orders."); } 
     catch (err) { console.error("❌ Lỗi tạo bảng:", err); }
 };
 
-// --- HELPER: FORMAT & CHUẨN HÓA DỮ LIỆU ---
+// --- HELPER: FORMAT NGÀY GIỜ VIỆT NAM ---
 const formatDateTimeVN = (isoString) => {
     if (!isoString) return "";
     const d = new Date(isoString);
@@ -85,162 +72,100 @@ const formatDateTimeVN = (isoString) => {
     return `${hh}h${mm} ${DD}/${MM}/${YYYY}`;
 };
 
+// --- HELPER: XỬ LÝ DATE TỪ EXCEL (QUAN TRỌNG: ĐỔI VỀ YYYY-MM-DD) ---
 const normalizeDateValue = (val) => {
     if (!val) return "";
+    
+    // Trường hợp 1: Excel Serial Number (Ví dụ: 45284)
     if (typeof val === 'number' && val > 25569 && val < 2958465) {
         const utc_days = Math.floor(val - 25569);
         const date_info = new Date(utc_days * 86400 * 1000);
         const year = date_info.getFullYear();
         const month = String(date_info.getMonth() + 1).padStart(2, '0');
         const day = String(date_info.getDate()).padStart(2, '0');
-        return `${year}-${month}-${day}`;
+        return `${year}-${month}-${day}`; // Trả về chuẩn YYYY-MM-DD
     }
+
+    // Trường hợp 2: String dạng "24/12/2025" -> Đổi thành "2025-12-24"
     if (typeof val === 'string' && /^\d{1,2}\/\d{1,2}\/\d{4}/.test(val)) {
-        const parts = val.split('/'); 
+        const parts = val.split('/'); // [24, 12, 2025]
         if (parts.length === 3) {
             const day = parts[0].padStart(2, '0');
             const month = parts[1].padStart(2, '0');
             const year = parts[2];
+            // Bỏ qua phần giờ phút nếu có
             return `${year}-${month}-${day}`.substring(0, 10);
         }
     }
+
+    // Trường hợp 3: String dạng "2025-12-24" -> Giữ nguyên
     return String(val).trim();
 };
-
-const excelDateToJSDate = (val) => normalizeDateValue(val);
 
 const toStr = (val) => { if (val === null || val === undefined) return ""; return String(val).trim().toUpperCase(); };
 
 const normalizeData = (obj) => {
     const cleanObj = {};
     Object.keys(obj).sort().forEach(key => {
+        // BỎ QUA CÁC CỘT RÁC VÀ NGÀY CẬP NHẬT KHI SO SÁNH
         if (['STT', 'stt', 'id', 'workshop', 'lot_number', 'status', 'created_at', 'updated_at', 'SKIP_UPDATE', 'Ngày Cập Nhật'].includes(key)) return;
         if (key.startsWith('Hồi ẩm (')) return;
+        
         let val = toStr(obj[key]);
         if (val !== "") cleanObj[key] = val;
     });
     return JSON.stringify(cleanObj);
 };
 
-const isIdentityMatch = (dbData, excelData) => {
-    const keys = ['SẢN PHẨM', 'MÀU', 'CHI SỐ'];
-    for (const key of keys) {
-        if (toStr(dbData[key]) !== toStr(excelData[key])) return false;
-    }
-    return true; 
+const isSameIdentity = (obj1, obj2) => {
+    if (toStr(obj1['SẢN PHẨM']) !== toStr(obj2['SẢN PHẨM'])) return false;
+    const keys1 = Object.keys(obj1).filter(k => k.startsWith('COT_'));
+    const keys2 = Object.keys(obj2).filter(k => k.startsWith('COT_'));
+    const allCotKeys = new Set([...keys1, ...keys2]);
+    for (let key of allCotKeys) { if (toStr(obj1[key]) !== toStr(obj2[key])) return false; }
+    return true;
 };
 
-// --- LOGIC XỬ LÝ IMPORT THÔNG MINH (OPTIMIZED) ---
+// --- LOGIC XỬ LÝ IMPORT ---
 const processImportLogic = async (workshop, rows) => {
     let inserted = 0, skipped = 0, updated = 0;
     const client = await pool.connect();
     try {
         await client.query('BEGIN');
-        
-        const rowsByLot = {};
-        for(const item of rows) {
-            const lot = item.lot_number;
-            if(!rowsByLot[lot]) rowsByLot[lot] = [];
-            rowsByLot[lot].push(item);
-        }
+        for (const item of rows) {
+            const { lot_number, data } = item;
+            
+            // Dọn dẹp dữ liệu rác
+            delete data['STT']; delete data['stt']; 
+            delete data['SKIP_UPDATE']; delete data['updated_at']; delete data['Ngày Cập Nhật'];
 
-        const allLots = Object.keys(rowsByLot);
-        const res = await client.query(
-            "SELECT id, lot_number, data FROM orders WHERE workshop = $1 AND lot_number = ANY($2)",
-            [workshop, allLots]
-        );
-        
-        const dbRecordsByLot = {};
-        for(const row of res.rows) {
-            if(!dbRecordsByLot[row.lot_number]) dbRecordsByLot[row.lot_number] = [];
-            dbRecordsByLot[row.lot_number].push({
-                ...row,
-                parsedData: JSON.parse(row.data)
-            });
-        }
+            const newSig = normalizeData(data);
+            const newDataFull = JSON.stringify(data);
+            const res = await client.query("SELECT id, data FROM orders WHERE workshop = $1 AND lot_number = $2", [workshop, lot_number]);
+            const existingRecords = res.rows;
+            let handled = false;
 
-        const insertBatch = [];
-        const updateBatch = [];
-
-        for (const lot of allLots) {
-            const excelItems = rowsByLot[lot];
-            const dbRecords = dbRecordsByLot[lot] || [];
-            const usedDbIds = new Set();
-
-            for (const item of excelItems) {
-                const { data } = item;
-                delete data['STT']; delete data['stt']; 
-                delete data['SKIP_UPDATE']; delete data['updated_at']; delete data['Ngày Cập Nhật'];
-
-                const newSig = normalizeData(data);
-                const newDataFull = JSON.stringify(data);
-                
-                let matchFound = false;
-                
-                for (const dbRecord of dbRecords) {
-                    if (usedDbIds.has(dbRecord.id)) continue;
-                    
-                    const oldSig = normalizeData(dbRecord.parsedData);
-                    if (oldSig === newSig) {
-                        usedDbIds.add(dbRecord.id);
-                        skipped++;
-                        matchFound = true;
-                        break;
+            for (const record of existingRecords) {
+                const oldData = JSON.parse(record.data);
+                if (isSameIdentity(oldData, data)) {
+                    const oldSig = normalizeData(oldData);
+                    if (oldSig === newSig) { 
+                        skipped++; // Giống hệt -> Bỏ qua
+                    } else { 
+                        // Khác -> Update -> Cập nhật giờ
+                        await client.query("UPDATE orders SET data = $1, updated_at = NOW() WHERE id = $2", [newDataFull, record.id]); 
+                        updated++; 
                     }
+                    handled = true; break;
                 }
-                
-                if (matchFound) continue;
-
-                for (const dbRecord of dbRecords) {
-                    if (usedDbIds.has(dbRecord.id)) continue;
-                    
-                    if (isIdentityMatch(dbRecord.parsedData, data)) {
-                        updateBatch.push({ id: dbRecord.id, data: newDataFull });
-                        usedDbIds.add(dbRecord.id);
-                        updated++;
-                        matchFound = true;
-                        break;
-                    }
-                }
-
-                if (matchFound) continue;
-
-                insertBatch.push({ workshop, lot, data: newDataFull });
+            }
+            if (!handled) {
+                await client.query("INSERT INTO orders (workshop, lot_number, data, status) VALUES ($1, $2, $3, 'ACTIVE')", [workshop, lot_number, newDataFull]);
                 inserted++;
             }
         }
-        
-        if (updateBatch.length > 0) {
-            const updateQuery = `
-                UPDATE orders SET 
-                    data = batch.data::text,
-                    updated_at = NOW()
-                FROM (SELECT unnest($1::int[]) as id, unnest($2::text[]) as data) as batch
-                WHERE orders.id = batch.id
-            `;
-            await client.query(updateQuery, [
-                updateBatch.map(u => u.id),
-                updateBatch.map(u => u.data)
-            ]);
-        }
-
-        if (insertBatch.length > 0) {
-            const insertQuery = `
-                INSERT INTO orders (workshop, lot_number, data, status)
-                SELECT unnest($1::text[]), unnest($2::text[]), unnest($3::text[]), 'ACTIVE'
-            `;
-            await client.query(insertQuery, [
-                insertBatch.map(i => i.workshop),
-                insertBatch.map(i => i.lot),
-                insertBatch.map(i => i.data)
-            ]);
-        }
-        
         await client.query('COMMIT');
-    } catch (e) { 
-        await client.query('ROLLBACK'); 
-        throw e; 
-    } 
+    } catch (e) { await client.query('ROLLBACK'); throw e; } 
     finally { client.release(); }
     return { inserted, skipped, updated };
 };
@@ -249,22 +174,13 @@ const processImportLogic = async (workshop, rows) => {
 app.get('/api/orders', async (req, res) => {
     const { workshop, status } = req.query;
     try {
-        const result = await pool.query(
-            `SELECT * FROM orders WHERE workshop = $1 AND status = $2 ORDER BY id ASC`, 
-            [workshop || 'AA', status || 'ACTIVE']
-        );
+        const result = await pool.query(`SELECT * FROM orders WHERE workshop = $1 AND status = $2 ORDER BY id ASC`, [workshop || 'AA', status || 'ACTIVE']);
         const rows = result.rows.map(row => ({
-            id: row.id, 
-            workshop: row.workshop, 
-            lot_number: row.lot_number, 
-            status: row.status, 
-            updated_at: row.updated_at,
+            id: row.id, workshop: row.workshop, lot_number: row.lot_number, status: row.status, updated_at: row.updated_at,
             ...JSON.parse(row.data || '{}')
         }));
         res.json(rows);
-    } catch (e) { 
-        res.status(500).json({ error: e.message }); 
-    }
+    } catch (e) { res.status(500).json({ error: e.message }); }
 });
 
 app.post('/api/orders', async (req, res) => {
@@ -287,185 +203,89 @@ app.put('/api/orders/:id', async (req, res) => {
 });
 
 app.delete('/api/orders/:id', async (req, res) => {
-    try { 
-        await pool.query("DELETE FROM orders WHERE id = $1", [req.params.id]); 
-        res.json({ success: true }); 
-    } 
+    try { await pool.query("DELETE FROM orders WHERE id = $1", [req.params.id]); res.json({ success: true }); } 
     catch (e) { res.status(500).json({ error: e.message }); }
 });
 
 app.patch('/api/orders/:id/status', async (req, res) => {
-    try { 
-        await pool.query("UPDATE orders SET status = $1, updated_at = NOW() WHERE id = $2", [req.body.status, req.params.id]); 
-        res.json({ success: true }); 
-    } 
+    try { await pool.query("UPDATE orders SET status = $1, updated_at = NOW() WHERE id = $2", [req.body.status, req.params.id]); res.json({ success: true }); } 
     catch (e) { res.status(500).json({ error: e.message }); }
 });
 
-// --- API EXPORT (ĐÃ SỬA THỨ TỰ CỘT) ---
+// --- API EXPORT (CHUẨN VỊ TRÍ, BỎ CỘT UPDATE) ---
 app.get('/api/export', async (req, res) => {
     try {
         const { workshop, status } = req.query;
         const currentWorkshop = workshop || 'AA';
-        const result = await pool.query(
-            `SELECT data, lot_number FROM orders WHERE workshop = $1 AND status = $2`, 
-            [currentWorkshop, status]
-        );
+        const result = await pool.query(`SELECT data, lot_number FROM orders WHERE workshop = $1 AND status = $2`, [currentWorkshop, status]);
         
-        // XÓA CÁC KEY TRÙNG LẶP VÀ CHUẨN BỊ DATA
         const jsonData = result.rows.map((r, index) => {
             const parsed = JSON.parse(r.data || '{}');
-            // Xóa các key không cần thiết và trùng lặp
-            delete parsed['STT'];
-            delete parsed['stt'];
-            delete parsed['Số LÔ'];
-            delete parsed['SỐ LÔ'];
-            
-            // Tạo object mới với STT đầu tiên
-            return { 
-                "STT": index + 1,
-                ...parsed,
-                "Số LÔ": r.lot_number  // Đặt Số Lô ở cuối
-            };
+            delete parsed['STT']; delete parsed['stt'];
+            // Chỉ lấy dữ liệu, KHÔNG export ngày cập nhật
+            return { "STT": index + 1, "SỐ LÔ": r.lot_number, ...parsed };
         });
 
         const wb = new ExcelJS.Workbook();
         const worksheet = wb.addWorksheet('Data');
 
-        // THỨ TỰ CỘT THEO GIAO DIỆN
-        const COLUMNS_ORDER = {
-            'AA': ["STT", "MÀU", "GHI CHÚ", "HỒI ẨM", "NGÀY XUỐNG ĐƠN", "SẢN PHẨM", "Số LÔ", "CHI SỐ", "SỐ LƯỢNG", "BẮT ĐẦU", "KẾT THÚC", "THAY ĐỔI", "SO MẪU", "ghi chú", "ghi chú (1)"],
-            'AB': ["STT", "MÀU", "GHI CHÚ", "HỒI ẨM", "NGÀY XUỐNG ĐƠN", "SẢN PHẨM", "Số LÔ", "CHI SỐ", "SỐ LƯỢNG", "BẮT ĐẦU", "KẾT THÚC", "THAY ĐỔI", "SO MẪU", "ghi chú", "ghi chú (1)"],
-            'OE': ["STT", "MÀU", "GHI CHÚ", "HỒI ẨM", "NGÀY XUỐNG ĐƠN", "SẢN PHẨM", "Số LÔ", "CHI SỐ", "SỐ LƯỢNG", "BẮT ĐẦU", "KẾT THÚC", "FU CUNG CÚI", "THỰC TẾ HOÀN THÀNH", "SO MẪU", "ghi chú", "ghi chú (1)"]
+        const COLUMNS_CONFIG = {
+            'AA': ["STT", "MÀU", "GHI CHÚ", "HỒI ẨM", "NGÀY XUỐNG ĐƠN", "SẢN PHẨM", "SỐ LÔ", "CHI SỐ", "SỐ LƯỢNG", "BẮT ĐẦU", "KẾT THÚC", "THAY ĐỔI", "SO MÀU", "ghi chú", "ghi chú (1)"],
+            'AB': ["STT", "MÀU", "GHI CHÚ", "HỒI ẨM", "NGÀY XUỐNG ĐƠN", "SẢN PHẨM", "SỐ LÔ", "CHI SỐ", "SỐ LƯỢNG", "BẮT ĐẦU", "KẾT THÚC", "THAY ĐỔI", "SO MÀU", "ghi chú", "ghi chú (1)"],
+            'OE': ["STT", "MÀU", "GHI CHÚ", "HỒI ẨM", "NGÀY XUỐNG ĐƠN", "SẢN PHẨM", "SỐ LÔ", "CHI SỐ", "SỐ LƯỢNG", "BẮT ĐẦU", "KẾT THÚC", "FU CUNG CÚI", "THỰC TẾ HOÀN THÀNH", "SO MÀU", "ghi chú", "ghi chú (1)"]
         };
-        const targetOrder = COLUMNS_ORDER[currentWorkshop] || COLUMNS_ORDER['AA'];
+        const targetOrder = COLUMNS_CONFIG[currentWorkshop] || COLUMNS_CONFIG['AA'];
 
-        // MAP HEADER HIỂN THỊ
         const HEADER_MAP = {
-            "GHI CHÚ": "Ghi chú 1",
-            "ghi chú": "Ghi chú 2",
-            "ghi chú (1)": "Ghi chú 3",
-            "NGÀY XUỐNG ĐƠN": "Ngày xuống đơn",
-            "SỐ LƯỢNG": "Số Lượng",
-            "BẮT ĐẦU": "Bắt Đầu",
-            "KẾT THÚC": "Kết Thúc",
-            "Số LÔ": "Số Lô",
-            "SẢN PHẨM": "Sản Phẩm",
-            "CHI SỐ": "Chi Số",
-            "MÀU": "Màu",
-            "THAY ĐỔI": "Thay Đổi",
-            "SO MẪU": "So Màu",
-            "HỒI ẨM": "Hồi ẩm",
-            "FU CUNG CÚI": "Fu Cung Cúi",
-            "THỰC TẾ HOÀN THÀNH": "Thực Tế"
+            "GHI CHÚ": "Ghi chú 1", "ghi chú": "Ghi chú 2", "ghi chú (1)": "Ghi chú 3",
+            "NGÀY XUỐNG ĐƠN": "Ngày xuống đơn", "SỐ LƯỢNG": "Số Lượng",
+            "BẮT ĐẦU": "Bắt Đầu", "KẾT THÚC": "Kết Thúc", "SỐ LÔ": "Số Lô", "SẢN PHẨM": "Sản Phẩm",
+            "CHI SỐ": "Chi Số", "MÀU": "Màu", "THAY ĐỔI": "Thay Đổi", "SO MÀU": "So Màu", "HỒI ẨM": "Hồi ẩm",
+            "FU CUNG CÚI": "Fu Cung Cúi", "THỰC TẾ HOÀN THÀNH": "Thực Tế"
         };
 
-        // LẤY TẤT CẢ KEY TỪ DATA
-        const allKeysSet = new Set();
-        jsonData.forEach(item => {
-            Object.keys(item).forEach(k => allKeysSet.add(k));
+        let allKeys = new Set();
+        jsonData.forEach(item => Object.keys(item).forEach(k => allKeys.add(k)));
+        
+        const sortedKeys = Array.from(allKeys).sort((a, b) => {
+            const indexA = targetOrder.findIndex(key => key === a || key === a.toUpperCase());
+            const indexB = targetOrder.findIndex(key => key === b || key === b.toUpperCase());
+            if (indexA !== -1 && indexB !== -1) return indexA - indexB;
+            if (indexA !== -1) return -1; if (indexB !== -1) return 1;
+            const isCotA = a.startsWith('COT_'); const isCotB = b.startsWith('COT_');
+            if (isCotA && isCotB) return (parseInt(a.replace('COT_', '') || 0) - parseInt(b.replace('COT_', '') || 0));
+            if (isCotA) return 1; if (isCotB) return -1;
+            return a.localeCompare(b);
         });
-        
-        // SẮP XẾP KEY THEO THỨ TỰ
-        const sortedKeys = [];
-        
-        // 1. Thêm các cột theo thứ tự chuẩn
-        targetOrder.forEach(orderedKey => {
-            if (allKeysSet.has(orderedKey)) {
-                sortedKeys.push(orderedKey);
-                allKeysSet.delete(orderedKey);
-            }
-        });
-        
-        // 2. Thêm các cột động COT_
-        const dynamicCols = Array.from(allKeysSet)
-            .filter(k => k.startsWith('COT_'))
-            .sort((a, b) => {
-                const numA = parseInt(a.replace('COT_', '') || 0);
-                const numB = parseInt(b.replace('COT_', '') || 0);
-                return numA - numB;
-            });
-        sortedKeys.push(...dynamicCols);
-        dynamicCols.forEach(k => allKeysSet.delete(k));
-        
-        // 3. Thêm các cột còn lại
-        const remainingCols = Array.from(allKeysSet).sort();
-        sortedKeys.push(...remainingCols);
 
-        // TẠO CỘT EXCEL
-        worksheet.columns = sortedKeys.map(key => ({
-            header: HEADER_MAP[key] || key,
-            key: key
-        }));
-        
+        worksheet.columns = sortedKeys.map(key => ({ header: HEADER_MAP[key] || key, key: key }));
         worksheet.addRows(jsonData);
 
-        // ĐỊNH DẠNG EXCEL
         const fontStyle = { name: 'Times New Roman', size: 12 };
-        const borderStyle = {
-            top: { style: 'thin' },
-            left: { style: 'thin' },
-            bottom: { style: 'thin' },
-            right: { style: 'thin' }
-        };
-        const alignStyle = {
-            vertical: 'middle',
-            horizontal: 'center',
-            wrapText: true
-        };
+        const borderStyle = { top: { style: 'thin' }, left: { style: 'thin' }, bottom: { style: 'thin' }, right: { style: 'thin' } };
+        const alignStyle = { vertical: 'middle', horizontal: 'center', wrapText: true }; 
 
         worksheet.eachRow((row, rowNumber) => {
-            row.eachCell((cell) => {
-                cell.font = fontStyle;
-                cell.border = borderStyle;
-                cell.alignment = alignStyle;
-            });
-            
-            if (rowNumber === 1) {
+            row.eachCell((cell) => { cell.font = fontStyle; cell.border = borderStyle; cell.alignment = alignStyle; });
+            if (rowNumber === 1) { 
                 row.height = 30;
-                row.eachCell((cell) => {
-                    cell.font = {
-                        ...fontStyle,
-                        bold: true,
-                        color: { argb: 'FFFFFFFF' }
-                    };
-                    cell.fill = {
-                        type: 'pattern',
-                        pattern: 'solid',
-                        fgColor: { argb: 'FF1F4E78' }
-                    };
-                    cell.alignment = {
-                        ...alignStyle,
-                        horizontal: 'center'
-                    };
-                });
+                row.eachCell((cell) => { cell.font = { ...fontStyle, bold: true, color: { argb: 'FFFFFFFF' } }; cell.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FF1F4E78' } }; cell.alignment = { ...alignStyle, horizontal: 'center' }; });
             }
         });
-
-        worksheet.columns.forEach(column => {
-            let maxLength = 0;
-            if (column.header) maxLength = column.header.length;
-            
-            column.eachCell({ includeEmpty: true }, (cell, rowNumber) => {
-                if (rowNumber > 50) return;
-                const val = cell.value ? cell.value.toString() : "";
-                if (val.length > maxLength) maxLength = val.length;
-            });
-            
-            column.width = Math.min(maxLength + 5, 60);
+        worksheet.columns.forEach(column => { 
+            let maxLength = 0; if (column.header) maxLength = column.header.length; 
+            column.eachCell({ includeEmpty: true }, (cell, rowNumber) => { if (rowNumber > 50) return; const val = cell.value ? cell.value.toString() : ""; if (val.length > maxLength) maxLength = val.length; }); 
+            column.width = Math.min(maxLength + 5, 60); 
         });
 
         const buffer = await wb.xlsx.writeBuffer();
         res.setHeader('Content-Disposition', `attachment; filename="${workshop}_Export.xlsx"`);
         res.setHeader('Content-Type', 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet');
         res.send(buffer);
-    } catch (e) {
-        console.error(e);
-        res.status(500).send(e.message);
-    }
+    } catch (e) { console.error(e); res.status(500).send(e.message); }
 });
 
-// --- API IMPORT ĐA SHEET ---
+// --- API IMPORT ĐA SHEET (FIXED DATE COMPARE) ---
 app.post('/api/import', upload.single('file'), async (req, res) => {
     if (!req.file) return res.status(400).send("No file.");
     const filePath = req.file.path;
@@ -500,10 +320,10 @@ app.post('/api/import', upload.single('file'), async (req, res) => {
                 let name = (h && String(h).trim() !== '') ? String(h).trim() : '';
                 const upperName = name.toUpperCase();
                 
-                if (upperName.includes('SỐ LÔ')) name = 'Số LÔ';
+                if (upperName.includes('SỐ LÔ')) name = 'SỐ LÔ';
                 else if (upperName.includes('SẢN PHẨM')) name = 'SẢN PHẨM';
                 else if (upperName.includes('MÀU') && !upperName.includes('SO')) name = 'MÀU';
-                else if (upperName.includes('SO MẪU')) name = 'SO MẪU';
+                else if (upperName.includes('SO MÀU')) name = 'SO MÀU';
                 else if (upperName.includes('CHI SỐ')) name = 'CHI SỐ';
                 else if (upperName.includes('SỐ LƯỢNG')) name = 'SỐ LƯỢNG';
                 else if (upperName.includes('BẮT ĐẦU')) name = 'BẮT ĐẦU';
@@ -520,6 +340,7 @@ app.post('/api/import', upload.single('file'), async (req, res) => {
                     else if (noteCounter === 3) name = 'ghi chú (1)';
                     else name = `GHI CHÚ (${noteCounter})`;
                 }
+                // --- NHẬN DIỆN CỘT NGÀY CẬP NHẬT ---
                 else if (upperName.includes('CẬP NHẬT') || upperName.includes('UPDATED')) {
                     name = 'SKIP_UPDATE';
                 }
@@ -531,7 +352,7 @@ app.post('/api/import', upload.single('file'), async (req, res) => {
                 mappedHeaders.push(name);
             });
 
-            const lotColIndex = mappedHeaders.findIndex(h => h === 'Số LÔ');
+            const lotColIndex = mappedHeaders.findIndex(h => h === 'SỐ LÔ');
             const processedRows = [];
 
             for (let i = headerIdx + 1; i < aoa.length; i++) {
@@ -550,9 +371,13 @@ app.post('/api/import', upload.single('file'), async (req, res) => {
                     const isSerialNum = typeof val === 'number' && val > 25569 && val < 2958465;
                     
                     if (val && (isDateCol || isSerialNum)) { 
+                        // --- SỬ DỤNG HÀM CHUẨN HÓA DATE MỚI ---
                         rowObject[header] = normalizeDateValue(val); 
                     }
-                    else { rowObject[header] = typeof val === 'boolean' ? String(val).toUpperCase() : val; }
+                    else { 
+                        // Chỉ uppercase nếu là boolean
+                        rowObject[header] = typeof val === 'boolean' ? String(val).toUpperCase() : val; 
+                    }
                 });
                 processedRows.push({ workshop: currentWorkshop, lot_number: String(lotVal).trim(), data: rowObject });
             }
