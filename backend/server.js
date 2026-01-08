@@ -58,7 +58,7 @@ const initDB = async () => {
     catch (err) { console.error("❌ Lỗi tạo bảng:", err); }
 };
 
-// --- HELPER: FORMAT NGÀY GIỜ VIỆT NAM ---
+// --- HELPER: FORMAT & CHUẨN HÓA DỮ LIỆU ---
 const formatDateTimeVN = (isoString) => {
     if (!isoString) return "";
     const d = new Date(isoString);
@@ -72,98 +72,128 @@ const formatDateTimeVN = (isoString) => {
     return `${hh}h${mm} ${DD}/${MM}/${YYYY}`;
 };
 
-// --- HELPER: XỬ LÝ DATE TỪ EXCEL (QUAN TRỌNG: ĐỔI VỀ YYYY-MM-DD) ---
 const normalizeDateValue = (val) => {
     if (!val) return "";
-    
-    // Trường hợp 1: Excel Serial Number (Ví dụ: 45284)
+    // Excel Serial
     if (typeof val === 'number' && val > 25569 && val < 2958465) {
         const utc_days = Math.floor(val - 25569);
         const date_info = new Date(utc_days * 86400 * 1000);
         const year = date_info.getFullYear();
         const month = String(date_info.getMonth() + 1).padStart(2, '0');
         const day = String(date_info.getDate()).padStart(2, '0');
-        return `${year}-${month}-${day}`; // Trả về chuẩn YYYY-MM-DD
+        return `${year}-${month}-${day}`;
     }
-
-    // Trường hợp 2: String dạng "24/12/2025" -> Đổi thành "2025-12-24"
+    // String DD/MM/YYYY -> YYYY-MM-DD
     if (typeof val === 'string' && /^\d{1,2}\/\d{1,2}\/\d{4}/.test(val)) {
-        const parts = val.split('/'); // [24, 12, 2025]
+        const parts = val.split('/'); 
         if (parts.length === 3) {
             const day = parts[0].padStart(2, '0');
             const month = parts[1].padStart(2, '0');
             const year = parts[2];
-            // Bỏ qua phần giờ phút nếu có
             return `${year}-${month}-${day}`.substring(0, 10);
         }
     }
-
-    // Trường hợp 3: String dạng "2025-12-24" -> Giữ nguyên
     return String(val).trim();
 };
+
+const excelDateToJSDate = (val) => normalizeDateValue(val); // Wrapper alias
 
 const toStr = (val) => { if (val === null || val === undefined) return ""; return String(val).trim().toUpperCase(); };
 
 const normalizeData = (obj) => {
     const cleanObj = {};
     Object.keys(obj).sort().forEach(key => {
-        // BỎ QUA CÁC CỘT RÁC VÀ NGÀY CẬP NHẬT KHI SO SÁNH
+        // Bỏ qua cột hệ thống để so sánh nội dung chính xác
         if (['STT', 'stt', 'id', 'workshop', 'lot_number', 'status', 'created_at', 'updated_at', 'SKIP_UPDATE', 'Ngày Cập Nhật'].includes(key)) return;
         if (key.startsWith('Hồi ẩm (')) return;
-        
         let val = toStr(obj[key]);
         if (val !== "") cleanObj[key] = val;
     });
     return JSON.stringify(cleanObj);
 };
 
-const isSameIdentity = (obj1, obj2) => {
-    if (toStr(obj1['SẢN PHẨM']) !== toStr(obj2['SẢN PHẨM'])) return false;
-    const keys1 = Object.keys(obj1).filter(k => k.startsWith('COT_'));
-    const keys2 = Object.keys(obj2).filter(k => k.startsWith('COT_'));
-    const allCotKeys = new Set([...keys1, ...keys2]);
-    for (let key of allCotKeys) { if (toStr(obj1[key]) !== toStr(obj2[key])) return false; }
-    return true;
+// --- LOGIC ĐỊNH DANH (IDENTITY CHECK) ---
+// Hai dòng được coi là "cùng một loại hàng" nếu trùng: Sản Phẩm + Màu + Chi Số
+const isIdentityMatch = (dbData, excelData) => {
+    const keys = ['SẢN PHẨM', 'MÀU', 'CHI SỐ'];
+    for (const key of keys) {
+        if (toStr(dbData[key]) !== toStr(excelData[key])) return false;
+    }
+    return true; 
 };
 
-// --- LOGIC XỬ LÝ IMPORT ---
+// --- LOGIC XỬ LÝ IMPORT THÔNG MINH (CONSUMED ID) ---
 const processImportLogic = async (workshop, rows) => {
     let inserted = 0, skipped = 0, updated = 0;
     const client = await pool.connect();
     try {
         await client.query('BEGIN');
-        for (const item of rows) {
-            const { lot_number, data } = item;
+        
+        // Gom nhóm dữ liệu theo Số Lô để xử lý một thể
+        const rowsByLot = {};
+        for(const item of rows) {
+            const lot = item.lot_number;
+            if(!rowsByLot[lot]) rowsByLot[lot] = [];
+            rowsByLot[lot].push(item);
+        }
+
+        for (const lot of Object.keys(rowsByLot)) {
+            const excelItems = rowsByLot[lot];
             
-            // Dọn dẹp dữ liệu rác
-            delete data['STT']; delete data['stt']; 
-            delete data['SKIP_UPDATE']; delete data['updated_at']; delete data['Ngày Cập Nhật'];
+            // Lấy tất cả bản ghi trong DB có cùng Số Lô
+            const res = await client.query("SELECT id, data FROM orders WHERE workshop = $1 AND lot_number = $2", [workshop, lot]);
+            const dbRecords = res.rows.map(r => ({ ...r, parsedData: JSON.parse(r.data) }));
+            
+            const usedDbIds = new Set(); // Danh sách ID đã được khớp (Consumed)
 
-            const newSig = normalizeData(data);
-            const newDataFull = JSON.stringify(data);
-            const res = await client.query("SELECT id, data FROM orders WHERE workshop = $1 AND lot_number = $2", [workshop, lot_number]);
-            const existingRecords = res.rows;
-            let handled = false;
+            for (const item of excelItems) {
+                const { data } = item;
+                // Dọn dẹp dữ liệu rác
+                delete data['STT']; delete data['stt']; 
+                delete data['SKIP_UPDATE']; delete data['updated_at']; delete data['Ngày Cập Nhật'];
 
-            for (const record of existingRecords) {
-                const oldData = JSON.parse(record.data);
-                if (isSameIdentity(oldData, data)) {
-                    const oldSig = normalizeData(oldData);
-                    if (oldSig === newSig) { 
-                        skipped++; // Giống hệt -> Bỏ qua
-                    } else { 
-                        // Khác -> Update -> Cập nhật giờ
-                        await client.query("UPDATE orders SET data = $1, updated_at = NOW() WHERE id = $2", [newDataFull, record.id]); 
-                        updated++; 
+                const newSig = normalizeData(data);
+                const newDataFull = JSON.stringify(data);
+                
+                let matchFound = false;
+                
+                // 1. Tìm bản ghi GIỐNG HỆT 100% (Ưu tiên Skip)
+                for (const dbRecord of dbRecords) {
+                    if (usedDbIds.has(dbRecord.id)) continue; // Bỏ qua nếu đã dùng
+                    
+                    const oldSig = normalizeData(dbRecord.parsedData);
+                    if (oldSig === newSig) {
+                        usedDbIds.add(dbRecord.id); // Đánh dấu đã dùng
+                        skipped++;
+                        matchFound = true;
+                        break;
                     }
-                    handled = true; break;
                 }
-            }
-            if (!handled) {
-                await client.query("INSERT INTO orders (workshop, lot_number, data, status) VALUES ($1, $2, $3, 'ACTIVE')", [workshop, lot_number, newDataFull]);
+                
+                if (matchFound) continue;
+
+                // 2. Tìm bản ghi CÙNG ĐỊNH DANH (Ưu tiên Update)
+                // Cùng Số Lô (đã lọc) + Cùng Sản Phẩm + Màu + Chi Số -> Thì chắc chắn là dòng này cần update
+                for (const dbRecord of dbRecords) {
+                    if (usedDbIds.has(dbRecord.id)) continue;
+                    
+                    if (isIdentityMatch(dbRecord.parsedData, data)) {
+                        await client.query("UPDATE orders SET data = $1, updated_at = NOW() WHERE id = $2", [newDataFull, dbRecord.id]);
+                        usedDbIds.add(dbRecord.id);
+                        updated++;
+                        matchFound = true;
+                        break;
+                    }
+                }
+
+                if (matchFound) continue;
+
+                // 3. Không tìm thấy khớp nào -> Insert mới
+                await client.query("INSERT INTO orders (workshop, lot_number, data, status) VALUES ($1, $2, $3, 'ACTIVE')", [workshop, lot, newDataFull]);
                 inserted++;
             }
         }
+        
         await client.query('COMMIT');
     } catch (e) { await client.query('ROLLBACK'); throw e; } 
     finally { client.release(); }
@@ -212,7 +242,7 @@ app.patch('/api/orders/:id/status', async (req, res) => {
     catch (e) { res.status(500).json({ error: e.message }); }
 });
 
-// --- API EXPORT (CHUẨN VỊ TRÍ, BỎ CỘT UPDATE) ---
+// --- API EXPORT ---
 app.get('/api/export', async (req, res) => {
     try {
         const { workshop, status } = req.query;
@@ -222,7 +252,6 @@ app.get('/api/export', async (req, res) => {
         const jsonData = result.rows.map((r, index) => {
             const parsed = JSON.parse(r.data || '{}');
             delete parsed['STT']; delete parsed['stt'];
-            // Chỉ lấy dữ liệu, KHÔNG export ngày cập nhật
             return { "STT": index + 1, "SỐ LÔ": r.lot_number, ...parsed };
         });
 
@@ -285,7 +314,7 @@ app.get('/api/export', async (req, res) => {
     } catch (e) { console.error(e); res.status(500).send(e.message); }
 });
 
-// --- API IMPORT ĐA SHEET (FIXED DATE COMPARE) ---
+// --- API IMPORT ĐA SHEET ---
 app.post('/api/import', upload.single('file'), async (req, res) => {
     if (!req.file) return res.status(400).send("No file.");
     const filePath = req.file.path;
@@ -340,7 +369,6 @@ app.post('/api/import', upload.single('file'), async (req, res) => {
                     else if (noteCounter === 3) name = 'ghi chú (1)';
                     else name = `GHI CHÚ (${noteCounter})`;
                 }
-                // --- NHẬN DIỆN CỘT NGÀY CẬP NHẬT ---
                 else if (upperName.includes('CẬP NHẬT') || upperName.includes('UPDATED')) {
                     name = 'SKIP_UPDATE';
                 }
@@ -371,13 +399,10 @@ app.post('/api/import', upload.single('file'), async (req, res) => {
                     const isSerialNum = typeof val === 'number' && val > 25569 && val < 2958465;
                     
                     if (val && (isDateCol || isSerialNum)) { 
-                        // --- SỬ DỤNG HÀM CHUẨN HÓA DATE MỚI ---
+                        // CHUẨN HÓA NGÀY THÁNG ĐỂ TRÁNH LỖI SO SÁNH (DD/MM/YYYY -> YYYY-MM-DD)
                         rowObject[header] = normalizeDateValue(val); 
                     }
-                    else { 
-                        // Chỉ uppercase nếu là boolean
-                        rowObject[header] = typeof val === 'boolean' ? String(val).toUpperCase() : val; 
-                    }
+                    else { rowObject[header] = typeof val === 'boolean' ? String(val).toUpperCase() : val; }
                 });
                 processedRows.push({ workshop: currentWorkshop, lot_number: String(lotVal).trim(), data: rowObject });
             }
