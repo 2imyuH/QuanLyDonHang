@@ -17,48 +17,32 @@ const upload = multer({ dest: 'uploads/' });
 app.use(cors({ origin: '*', methods: ['GET', 'POST', 'PUT', 'DELETE', 'PATCH'] }));
 app.use(express.json());
 
-// --- GIẢI PHÁP CUỐI: Thêm family=4 vào connection string ---
+// --- KẾT NỐI DATABASE (FIX IPV6 RENDER) ---
 let pool;
-
 const initPool = async () => {
     try {
         let connectionString = process.env.DATABASE_URL;
-        
-        // Thêm family=4 để bắt buộc IPv4
         if (!connectionString.includes('family=')) {
             const separator = connectionString.includes('?') ? '&' : '?';
             connectionString = `${connectionString}${separator}family=4`;
         }
-        
-        console.log('🔗 Đang kết nối database với IPv4 only...');
-        
+        console.log('🔗 Đang kết nối database...');
         pool = new Pool({
             connectionString: connectionString,
             ssl: { rejectUnauthorized: false },
             connectionTimeoutMillis: 15000,
         });
-
-        // Test connection
         const client = await pool.connect();
         await client.query('SELECT NOW()');
         client.release();
-        
         console.log('✅ Đã kết nối PostgreSQL thành công!');
-
-        // Khởi tạo bảng
         await initDB();
-
     } catch (err) {
         console.error('❌ Lỗi kết nối Database:', err);
-        console.error('💡 Hãy kiểm tra:');
-        console.error('   1. DATABASE_URL có đúng không?');
-        console.error('   2. Database có cho phép kết nối từ Render không?');
-        console.error('   3. Thử thêm ?family=4 vào cuối DATABASE_URL');
         process.exit(1);
     }
 };
 
-// --- KHỞI TẠO BẢNG ---
 const initDB = async () => {
     const createTableQuery = `
         CREATE TABLE IF NOT EXISTS orders (
@@ -71,12 +55,8 @@ const initDB = async () => {
             updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
         );
     `;
-    try {
-        await pool.query(createTableQuery);
-        console.log("✅ Đã kiểm tra/tạo bảng orders.");
-    } catch (err) {
-        console.error("❌ Lỗi tạo bảng:", err);
-    }
+    try { await pool.query(createTableQuery); console.log("✅ Đã kiểm tra bảng orders."); } 
+    catch (err) { console.error("❌ Lỗi tạo bảng:", err); }
 };
 
 // --- HELPER FUNCTIONS ---
@@ -134,50 +114,33 @@ const isSameIdentity = (obj1, obj2) => {
 const processImportLogic = async (workshop, rows) => {
     let inserted = 0, skipped = 0, updated = 0;
     const client = await pool.connect();
-
     try {
         await client.query('BEGIN');
-
         for (const item of rows) {
             const { lot_number, data } = item;
             delete data['STT']; delete data['stt'];
-
             const newSig = normalizeData(data);
             const newDataFull = JSON.stringify(data);
-
             const res = await client.query("SELECT id, data FROM orders WHERE workshop = $1 AND lot_number = $2", [workshop, lot_number]);
             const existingRecords = res.rows;
-            
             let handled = false;
-
             for (const record of existingRecords) {
                 const oldData = JSON.parse(record.data);
                 if (isSameIdentity(oldData, data)) {
                     const oldSig = normalizeData(oldData);
-                    if (oldSig === newSig) {
-                        skipped++;
-                    } else {
-                        await client.query("UPDATE orders SET data = $1, updated_at = NOW() WHERE id = $2", [newDataFull, record.id]);
-                        updated++;
-                    }
-                    handled = true;
-                    break;
+                    if (oldSig === newSig) { skipped++; } 
+                    else { await client.query("UPDATE orders SET data = $1, updated_at = NOW() WHERE id = $2", [newDataFull, record.id]); updated++; }
+                    handled = true; break;
                 }
             }
-
             if (!handled) {
                 await client.query("INSERT INTO orders (workshop, lot_number, data, status) VALUES ($1, $2, $3, 'ACTIVE')", [workshop, lot_number, newDataFull]);
                 inserted++;
             }
         }
-
         await client.query('COMMIT');
-    } catch (e) {
-        await client.query('ROLLBACK');
-        throw e;
-    } finally {
-        client.release();
-    }
+    } catch (e) { await client.query('ROLLBACK'); throw e; } 
+    finally { client.release(); }
     return { inserted, skipped, updated };
 };
 
@@ -187,11 +150,7 @@ app.get('/api/orders', async (req, res) => {
     try {
         const result = await pool.query(`SELECT * FROM orders WHERE workshop = $1 AND status = $2 ORDER BY id ASC`, [workshop || 'AA', status || 'ACTIVE']);
         const rows = result.rows.map(row => ({
-            id: row.id,
-            workshop: row.workshop,
-            lot_number: row.lot_number,
-            status: row.status,
-            updated_at: row.updated_at,
+            id: row.id, workshop: row.workshop, lot_number: row.lot_number, status: row.status, updated_at: row.updated_at,
             ...JSON.parse(row.data || '{}')
         }));
         res.json(rows);
@@ -218,19 +177,16 @@ app.put('/api/orders/:id', async (req, res) => {
 });
 
 app.delete('/api/orders/:id', async (req, res) => {
-    try {
-        await pool.query("DELETE FROM orders WHERE id = $1", [req.params.id]);
-        res.json({ success: true });
-    } catch (e) { res.status(500).json({ error: e.message }); }
+    try { await pool.query("DELETE FROM orders WHERE id = $1", [req.params.id]); res.json({ success: true }); } 
+    catch (e) { res.status(500).json({ error: e.message }); }
 });
 
 app.patch('/api/orders/:id/status', async (req, res) => {
-    try {
-        await pool.query("UPDATE orders SET status = $1, updated_at = NOW() WHERE id = $2", [req.body.status, req.params.id]);
-        res.json({ success: true });
-    } catch (e) { res.status(500).json({ error: e.message }); }
+    try { await pool.query("UPDATE orders SET status = $1, updated_at = NOW() WHERE id = $2", [req.body.status, req.params.id]); res.json({ success: true }); } 
+    catch (e) { res.status(500).json({ error: e.message }); }
 });
 
+// --- API EXPORT (ĐÃ SỬA FORMAT THEO YÊU CẦU) ---
 app.get('/api/export', async (req, res) => {
     try {
         const { workshop, status } = req.query;
@@ -255,7 +211,6 @@ app.get('/api/export', async (req, res) => {
 
         let allKeys = new Set();
         jsonData.forEach(item => Object.keys(item).forEach(k => allKeys.add(k)));
-
         const sortedKeys = Array.from(allKeys).sort((a, b) => {
             const indexA = ORDER_KEYS.indexOf(a.toUpperCase());
             const indexB = ORDER_KEYS.indexOf(b.toUpperCase());
@@ -270,6 +225,35 @@ app.get('/api/export', async (req, res) => {
         worksheet.columns = sortedKeys.map(key => ({ header: HEADER_MAP[key] || key, key: key }));
         worksheet.addRows(jsonData);
 
+        // --- CẤU HÌNH STYLE (Times New Roman, Blue Header, Center Align) ---
+        const fontStyle = { name: 'Times New Roman', size: 12 };
+        const borderStyle = { top: { style: 'thin' }, left: { style: 'thin' }, bottom: { style: 'thin' }, right: { style: 'thin' } };
+        // Thêm horizontal: 'center'
+        const alignStyle = { vertical: 'middle', horizontal: 'center', wrapText: true }; 
+
+        worksheet.eachRow((row, rowNumber) => {
+            row.eachCell((cell) => {
+                cell.font = fontStyle;
+                cell.border = borderStyle;
+                cell.alignment = alignStyle; // Áp dụng căn giữa cho tất cả
+            });
+            if (rowNumber === 1) { // Header Row
+                row.height = 30;
+                row.eachCell((cell) => {
+                    cell.font = { ...fontStyle, bold: true, color: { argb: 'FFFFFFFF' } }; // Chữ Trắng Đậm
+                    cell.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FF1F4E78' } }; // Nền Xanh Đậm
+                    cell.alignment = { ...alignStyle, horizontal: 'center' }; // Header cũng căn giữa
+                });
+            }
+        });
+        
+        // Auto width
+        worksheet.columns.forEach(column => { 
+            let maxLength = 0; if (column.header) maxLength = column.header.length; 
+            column.eachCell({ includeEmpty: true }, (cell, rowNumber) => { if (rowNumber > 50) return; const val = cell.value ? cell.value.toString() : ""; if (val.length > maxLength) maxLength = val.length; }); 
+            column.width = Math.min(maxLength + 5, 60); 
+        });
+
         const buffer = await wb.xlsx.writeBuffer();
         const dateStr = new Date().toLocaleDateString('en-GB', { day: '2-digit', month: '2-digit' }).replace('/', '');
         res.setHeader('Content-Disposition', `attachment; filename="${workshop}_${dateStr}.xlsx"`);
@@ -281,22 +265,15 @@ app.get('/api/export', async (req, res) => {
 app.post('/api/import', upload.single('file'), async (req, res) => {
     if (!req.file) return res.status(400).send("No file.");
     const filePath = req.file.path;
-
     try {
         const workshopType = req.query.workshop || 'AA';
         const isForce = req.query.force === 'true';
-
         const workbook = XLSX.readFile(filePath);
         const sheetName = workbook.SheetNames[0];
         const aoa = XLSX.utils.sheet_to_json(workbook.Sheets[sheetName], { header: 1, defval: "" });
-
         let headerIdx = -1;
-        for (let i = 0; i < Math.min(aoa.length, 30); i++) {
-            if (JSON.stringify(aoa[i]).toUpperCase().includes('SỐ LÔ')) { headerIdx = i; break; }
-        }
-
+        for (let i = 0; i < Math.min(aoa.length, 30); i++) { if (JSON.stringify(aoa[i]).toUpperCase().includes('SỐ LÔ')) { headerIdx = i; break; } }
         if (headerIdx === -1) { fs.unlinkSync(filePath); return res.status(400).json({ error: "Lỗi file: Không tìm thấy cột Số Lô" }); }
-
         const rawHeaders = aoa[headerIdx];
         if (!isForce) {
             const headerStr = JSON.stringify(rawHeaders).toUpperCase();
@@ -304,14 +281,13 @@ app.post('/api/import', upload.single('file'), async (req, res) => {
             if (workshopType === 'OE' && !isOESignature) { fs.unlinkSync(filePath); return res.json({ warning: true, message: "Cảnh báo: Bạn đang ở OE nhưng file thiếu cột đặc thù." }); }
             if (workshopType !== 'OE' && isOESignature) { fs.unlinkSync(filePath); return res.json({ warning: true, message: `Cảnh báo: Bạn đang ở ${workshopType} nhưng file có cột OE.` }); }
         }
-
-        const uniqueHeaders = [];
+        
+        const mappedHeaders = [];
         const nameCount = {};
-
+        let noteCounter = 0;
         rawHeaders.forEach((h, index) => {
             let name = (h && String(h).trim() !== '') ? String(h).trim() : '';
             const upperName = name.toUpperCase();
-
             if (upperName.includes('SỐ LÔ')) name = 'Số LÔ';
             else if (upperName.includes('SẢN PHẨM')) name = 'SẢN PHẨM';
             else if (upperName.includes('MÀU') && !upperName.includes('SO')) name = 'MÀU';
@@ -326,27 +302,27 @@ app.post('/api/import', upload.single('file'), async (req, res) => {
             else if (upperName.includes('FU CUNG')) name = 'FU CUNG CÚI';
             else if (upperName.includes('THỰC TẾ')) name = 'THỰC TẾ HOÀN THÀNH';
             else if (upperName.includes('GHI CHÚ')) {
-                if (upperName.includes('1')) name = 'GHI CHÚ';
-                else if (upperName.includes('2')) name = 'ghi chú';
-                else if (upperName.includes('3')) name = 'ghi chú (1)';
-                else name = 'GHI CHÚ';
+                noteCounter++;
+                if (noteCounter === 1) name = 'GHI CHÚ';
+                else if (noteCounter === 2) name = 'ghi chú';
+                else if (noteCounter === 3) name = 'ghi chú (1)';
+                else name = `GHI CHÚ (${noteCounter})`;
             }
-
             if (name === '' || name.startsWith('COT_')) { if (name === '') name = `COT_${index}`; }
-            if (nameCount[name]) { nameCount[name]++; name = `${name} (${nameCount[name]})`; } else { nameCount[name] = 1; }
-            uniqueHeaders.push(name);
+            if (!['GHI CHÚ', 'ghi chú', 'ghi chú (1)'].includes(name)) {
+                if (nameCount[name]) { nameCount[name]++; name = `${name} (${nameCount[name]})`; } else { nameCount[name] = 1; }
+            }
+            mappedHeaders.push(name);
         });
 
-        const lotColIndex = uniqueHeaders.findIndex(h => h === 'Số LÔ');
+        const lotColIndex = mappedHeaders.findIndex(h => h === 'Số LÔ');
         const processedRows = [];
-
         for (let i = headerIdx + 1; i < aoa.length; i++) {
             const rowData = aoa[i];
             const lotVal = rowData[lotColIndex];
             if (!lotVal || String(lotVal).trim() === '') continue;
-
             const rowObject = {};
-            uniqueHeaders.forEach((header, index) => {
+            mappedHeaders.forEach((header, index) => {
                 const val = rowData[index];
                 const isDateCol = /NGÀY|DATE|BẮT ĐẦU|KẾT THÚC|GIAO|THỜI GIAN/i.test(header);
                 const isSerialNum = typeof val === 'number' && val > 25569 && val < 2958465;
@@ -355,16 +331,10 @@ app.post('/api/import', upload.single('file'), async (req, res) => {
             });
             processedRows.push({ workshop: workshopType, lot_number: String(lotVal).trim(), data: rowObject });
         }
-
         const result = await processImportLogic(workshopType, processedRows);
         fs.unlinkSync(filePath);
         res.json({ success: true, ...result });
-
-    } catch (e) {
-        console.error(e);
-        if (fs.existsSync(req.file.path)) fs.unlinkSync(req.file.path);
-        res.status(500).json({ error: e.message });
-    }
+    } catch (e) { console.error(e); if (fs.existsSync(req.file.path)) fs.unlinkSync(req.file.path); res.status(500).json({ error: e.message }); }
 });
 
 app.post('/api/orders/batch', async (req, res) => {
@@ -378,17 +348,7 @@ app.post('/api/orders/batch', async (req, res) => {
     } catch (e) { res.status(500).json({ error: e.message }); }
 });
 
-// --- HEALTH CHECK ---
-app.get('/health', (req, res) => {
-    res.json({ status: 'ok', timestamp: new Date().toISOString() });
-});
+app.get('/health', (req, res) => { res.json({ status: 'ok', timestamp: new Date().toISOString() }); });
 
-// --- START SERVER ---
 const PORT = process.env.PORT || 3001;
-
-initPool().then(() => {
-    app.listen(PORT, () => console.log(`🚀 Server running on port ${PORT}`));
-}).catch(err => {
-    console.error('❌ Không thể khởi động server:', err);
-    process.exit(1);
-});
+initPool().then(() => { app.listen(PORT, () => console.log(`🚀 Server running on port ${PORT}`)); }).catch(err => { console.error('❌ Không thể khởi động server:', err); process.exit(1); });

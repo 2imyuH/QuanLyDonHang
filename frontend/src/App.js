@@ -33,7 +33,7 @@ const App = () => {
   useEffect(() => { setInputValue(''); setSearchText(''); }, [activeWorkshop]);
   useEffect(() => { const t = setTimeout(() => setSearchText(inputValue), 600); return () => clearTimeout(t); }, [inputValue]);
 
-  // --- CẤU HÌNH CỘT CHÍNH (ĐÃ SẮP XẾP LẠI CHO OE) ---
+  // --- CẤU HÌNH CỘT CHÍNH (ĐÃ SỬA KEY 'SỐ LÔ' IN HOA) ---
   const MAIN_FIELDS = useMemo(() => ({
     'AA': [
       { key: 'MÀU', label: 'Màu', span: 6 },
@@ -41,7 +41,7 @@ const App = () => {
       { key: 'HỒI ẨM', label: 'Hồi ẩm', span: 6 }, 
       { key: 'NGÀY XUỐNG ĐƠN', label: 'Ngày xuống đơn', span: 8, type: 'date' },
       { key: 'SẢN PHẨM', label: 'Sản Phẩm', span: 16 },
-      { key: 'Số LÔ', label: 'Số Lô', span: 12, required: true },
+      { key: 'SỐ LÔ', label: 'Số Lô', span: 12, required: true }, // Đã sửa thành SỐ LÔ
       { key: 'CHI SỐ', label: 'Chi Số', span: 6 },
       { key: 'SỐ LƯỢNG', label: 'Số Lượng', span: 6 },
       { key: 'BẮT ĐẦU', label: 'Bắt Đầu', span: 12, type: 'date' },
@@ -50,6 +50,7 @@ const App = () => {
       { key: 'SO MÀU', label: 'So Màu', span: 12 },
       { key: 'ghi chú', label: 'Ghi Chú 2', span: 12, type: 'area' }, 
       { key: 'ghi chú (1)', label: 'Ghi Chú 3', span: 12, type: 'area' },
+      { key: 'updated_at', label: 'Cập Nhật', span: 12 },
     ],
     'AB': [
       { key: 'MÀU', label: 'Màu', span: 6 },
@@ -57,7 +58,7 @@ const App = () => {
       { key: 'HỒI ẨM', label: 'Hồi ẩm', span: 6 }, 
       { key: 'NGÀY XUỐNG ĐƠN', label: 'Ngày xuống đơn', span: 8, type: 'date' },
       { key: 'SẢN PHẨM', label: 'Sản Phẩm', span: 16 },
-      { key: 'Số LÔ', label: 'Số Lô', span: 12, required: true },
+      { key: 'SỐ LÔ', label: 'Số Lô', span: 12, required: true }, // Đã sửa
       { key: 'CHI SỐ', label: 'Chi Số', span: 6 },
       { key: 'SỐ LƯỢNG', label: 'Số Lượng', span: 6 },
       { key: 'BẮT ĐẦU', label: 'Bắt Đầu', span: 12, type: 'date' },
@@ -66,15 +67,15 @@ const App = () => {
       { key: 'SO MÀU', label: 'So Màu', span: 12 },
       { key: 'ghi chú', label: 'Ghi Chú 2', span: 12, type: 'area' }, 
       { key: 'ghi chú (1)', label: 'Ghi Chú 3', span: 12, type: 'area' },
+      { key: 'updated_at', label: 'Cập Nhật', span: 12 },
     ],
     'OE': [
-      // OE: MÀU -> GHI CHÚ -> HỒI ẨM -> NGÀY -> SẢN PHẨM -> Số LÔ -> CHI SỐ -> SỐ LƯỢNG -> BẮT ĐẦU -> KẾT THÚC -> FU CUNG -> THỰC TẾ -> SO MÀU
       { key: 'MÀU', label: 'Màu', span: 6 },
       { key: 'GHI CHÚ', label: 'Ghi chú 1', span: 12, type: 'area' },
       { key: 'HỒI ẨM', label: 'Hồi ẩm', span: 6 },
       { key: 'NGÀY XUỐNG ĐƠN', label: 'Ngày xuống đơn', span: 8, type: 'date' },
       { key: 'SẢN PHẨM', label: 'Sản Phẩm', span: 16 },
-      { key: 'Số LÔ', label: 'Số Lô', span: 12, required: true },
+      { key: 'SỐ LÔ', label: 'Số Lô', span: 12, required: true }, // Đã sửa
       { key: 'CHI SỐ', label: 'Chi Số', span: 6 },
       { key: 'SỐ LƯỢNG', label: 'Số Lượng', span: 6 },
       { key: 'BẮT ĐẦU', label: 'Bắt Đầu', span: 12, type: 'date' },
@@ -84,6 +85,7 @@ const App = () => {
       { key: 'SO MÀU', label: 'So Màu', span: 12 },
       { key: 'ghi chú', label: 'Ghi Chú 2', span: 12, type: 'area' },
       { key: 'ghi chú (1)', label: 'Ghi Chú 3', span: 12, type: 'area' },
+      { key: 'updated_at', label: 'Cập Nhật', span: 12 },
     ]
   }), []);
 
@@ -155,7 +157,7 @@ const App = () => {
           }); 
           
           const payload = isAdding 
-            ? { workshop: activeWorkshop, lot_number: values['Số LÔ'], data: values } 
+            ? { workshop: activeWorkshop, lot_number: values['SỐ LÔ'], data: values } 
             : { ...values, id: editingRecord.id }; 
           
           if (isAdding) {
@@ -171,21 +173,7 @@ const App = () => {
       } catch (error) { message.error("Lỗi lưu dữ liệu"); } 
   };
 
-  const handleExport = async () => { 
-      try { 
-          message.loading("Xuất file...", 1); 
-          const res = await axios.get(`${API_URL}/api/export?workshop=${activeWorkshop}&status=${activeStatus}`, { responseType: 'blob' }); 
-          const url = window.URL.createObjectURL(new Blob([res.data])); 
-          const link = document.createElement('a'); 
-          link.href = url; 
-          const prefix = activeStatus === 'COMPLETED' ? 'DonOK' : 'DonSanXuat'; 
-          const fileName = `${prefix}_${activeWorkshop}_${dayjs().format('DDMM')}.xlsx`; 
-          link.setAttribute('download', fileName); 
-          document.body.appendChild(link); 
-          link.click(); 
-          message.success("Thành công!"); 
-      } catch (e) { message.error("Lỗi"); } 
-  };
+  const handleExport = async () => { try { message.loading("Xuất file...", 1); const res = await axios.get(`${API_URL}/api/export?workshop=${activeWorkshop}&status=${activeStatus}`, { responseType: 'blob' }); const url = window.URL.createObjectURL(new Blob([res.data])); const link = document.createElement('a'); link.href = url; const prefix = activeStatus === 'COMPLETED' ? 'DonOK' : 'DonSanXuat'; const fileName = `${prefix}_${activeWorkshop}_${dayjs().format('DDMM')}.xlsx`; link.setAttribute('download', fileName); document.body.appendChild(link); link.click(); message.success("Thành công!"); } catch (e) { message.error("Lỗi"); } };
 
   const handleImport = async (file, paramForce) => {
       const formData = new FormData();
@@ -267,15 +255,17 @@ const App = () => {
 
   const processPasteData = (firstRowCells, validRows, delimiter, isHeaderRow) => {
       let columnMapping = []; 
+      
       if (isHeaderRow) {
           message.success(`Đã nhận diện tiêu đề!`);
+          let noteCounter = 0; 
+
           columnMapping = firstRowCells.map(header => {
               if (!header) return null;
               const cleanHeader = header.replace(/"/g, '').trim(); 
               const upperName = cleanHeader.toUpperCase();
 
-              // --- MAP CHUẨN IN HOA ---
-              if (upperName.includes('SỐ LÔ')) return 'Số LÔ';
+              if (upperName.includes('SỐ LÔ')) return 'SỐ LÔ'; // Sửa thành SỐ LÔ
               if (upperName.includes('SẢN PHẨM')) return 'SẢN PHẨM';
               if (upperName.includes('MÀU') && !upperName.includes('SO')) return 'MÀU';
               if (upperName.includes('SO MÀU')) return 'SO MÀU';
@@ -290,10 +280,11 @@ const App = () => {
               if (upperName.includes('NGÀY') && upperName.includes('ĐƠN')) return 'NGÀY XUỐNG ĐƠN';
 
               if (upperName.includes('GHI CHÚ')) {
-                  if (upperName.includes('1')) return 'GHI CHÚ';
-                  if (upperName.includes('2')) return 'ghi chú';
-                  if (upperName.includes('3')) return 'ghi chú (1)';
-                  return 'GHI CHÚ'; 
+                  noteCounter++;
+                  if (noteCounter === 1) return 'GHI CHÚ';
+                  if (noteCounter === 2) return 'ghi chú';
+                  if (noteCounter === 3) return 'ghi chú (1)';
+                  return `GHI CHÚ (${noteCounter})`;
               }
               if (upperName.startsWith('COT_')) return cleanHeader;
               return null;
@@ -324,7 +315,7 @@ const App = () => {
                   if (['SỐ LƯỢNG', 'HỒI ẨM', 'CHI SỐ', 'LBS'].includes(key) && val) val = val.replace(/,/g, '');
               }
               rowObj[key] = val;
-              if (key === 'Số LÔ') lotNumber = val;
+              if (key === 'SỐ LÔ') lotNumber = val; // Sửa thành SỐ LÔ
           });
           if (lotNumber) parsedItems.push({ workshop: activeWorkshop, lot_number: lotNumber, data: rowObj });
       }
@@ -348,7 +339,8 @@ const App = () => {
   const renderForm = () => {
     const configCols = MAIN_FIELDS[activeWorkshop] || [];
     const configKeys = configCols.map(c => c.key);
-    let extraKeys = []; if (editingRecord) extraKeys = Object.keys(editingRecord).filter(k => !configKeys.includes(k) && !['id', 'workshop', 'lot_number', 'status', 'created_at'].includes(k));
+    // Ẩn cột SỐ LÔ, status... khỏi phần "Thêm" của form edit
+    let extraKeys = []; if (editingRecord) extraKeys = Object.keys(editingRecord).filter(k => !configKeys.includes(k) && !['id', 'workshop', 'lot_number', 'status', 'created_at', 'updated_at'].includes(k));
     return (
       <Form form={form} layout="vertical">
         <Divider orientation="left" style={{marginTop: 0, color: '#1890ff'}}>Thông tin chi tiết</Divider>
@@ -356,9 +348,10 @@ const App = () => {
           {configCols.map((field) => (
             <Col span={field.span || 12} key={field.key}>
               <Form.Item name={field.key} label={field.label} rules={[{ required: field.required, message: '!' }]}>
-                {field.type === 'area' ? <TextArea rows={2} /> 
+                {field.key === 'updated_at' ? <Input disabled /> // Không cho sửa ngày cập nhật
+                : field.type === 'area' ? <TextArea rows={2} /> 
                 : field.type === 'date' ? <DatePicker style={{width: '100%'}} format="DD/MM/YYYY" placeholder="Chọn ngày" />
-                : <Input disabled={!isAdding && field.key === 'Số LÔ'} />}
+                : <Input disabled={!isAdding && field.key === 'SỐ LÔ'} />}
               </Form.Item>
             </Col>
           ))}
@@ -372,7 +365,7 @@ const App = () => {
     if (!searchText) return data;
     const lower = searchText.toLowerCase();
     return data.filter(item => {
-        const lot = item['Số LÔ'] || item.lot_number || '';
+        const lot = item['SỐ LÔ'] || item.lot_number || '';
         const prod = item['SẢN PHẨM'] || '';
         return String(lot).toLowerCase().includes(lower) || String(prod).toLowerCase().includes(lower);
     });
@@ -381,15 +374,19 @@ const App = () => {
   const columns = useMemo(() => {
     const configCols = MAIN_FIELDS[activeWorkshop] || [];
     const configKeys = configCols.map(c => c.key);
-    const systemKeys = ['id', 'workshop', 'lot_number', 'status', 'created_at', 'data'];
+    const systemKeys = ['id', 'workshop', 'lot_number', 'status', 'created_at', 'updated_at', 'data'];
     const extraKeysSet = new Set();
     data.slice(0, 50).forEach(record => { Object.keys(record).forEach(key => { if (!configKeys.includes(key) && !systemKeys.includes(key)) extraKeysSet.add(key); }); });
 
     const sttCol = { title: 'STT', key: 'stt', width: 60, align: 'center', fixed: 'left', render: (t, r, i) => <b>{i + 1}</b> };
     const mainTableCols = configCols.map(f => ({
-      title: f.label, dataIndex: f.key, width: f.key === 'Số LÔ' ? 130 : 150, fixed: f.key === 'Số LÔ' ? 'left' : false,
+      title: f.label, dataIndex: f.key, width: f.key === 'SỐ LÔ' ? 130 : 150, fixed: f.key === 'SỐ LÔ' ? 'left' : false,
       render: (text) => {
-          if (f.key === 'Số LÔ') return <b style={{color: '#1890ff'}}>{text}</b>;
+          // --- FORMAT NGÀY CẬP NHẬT: 10h44 08/01/2026 ---
+          if (f.key === 'updated_at' && text) {
+              return <span style={{color: '#888', fontSize: 12}}>{dayjs(text).format('HH[h]mm DD/MM/YYYY')}</span>;
+          }
+          if (f.key === 'SỐ LÔ') return <b style={{color: '#1890ff'}}>{text}</b>;
           if (f.key === 'HỒI ẨM' && text) return <span style={{fontWeight: 500}}>{!isNaN(parseFloat(text)) ? parseFloat(text).toFixed(2) : text}</span>;
           if (f.type === 'date' && text) { const d = dayjs(text); return d.isValid() ? d.format('DD/MM/YYYY') : text; }
           return <span style={{fontWeight: 500}}>{text}</span>;
@@ -413,7 +410,7 @@ const App = () => {
   const getPreviewColumns = () => {
       const baseCols = (MAIN_FIELDS[activeWorkshop] || []).map(f => ({ title: f.label, dataIndex: ['data', f.key], width: 100, render: (t) => <span style={{fontSize: 12}}>{t}</span> }));
       if (previewData.length > 0) {
-        const firstItem = previewData[0].data;
+          const firstItem = previewData[0].data;
           const extraKeys = Object.keys(firstItem).filter(k => k.startsWith('COT_')).sort((a, b) => (parseInt(a.replace('COT_', '')||0) - parseInt(b.replace('COT_', '')||0)));
           const extraCols = extraKeys.map(key => ({ 
               title: key, 
@@ -462,10 +459,8 @@ const App = () => {
           </Card>
        </Content>
        
-       {/* Modal Thêm/Sửa */}
-       <Modal title={isAdding ? "Thêm Mới" : <span>Sửa: <Tag color="blue">{editingRecord?.['Số LÔ']}</Tag></span>} open={isModalVisible} onOk={handleSave} onCancel={() => setIsModalVisible(false)} width={900} okText="Lưu" cancelText="Hủy" maskClosable={false}>{renderForm()}</Modal>
+       <Modal title={isAdding ? "Thêm Mới" : <span>Sửa: <Tag color="blue">{editingRecord?.['SỐ LÔ']}</Tag></span>} open={isModalVisible} onOk={handleSave} onCancel={() => setIsModalVisible(false)} width={900} okText="Lưu" cancelText="Hủy" maskClosable={false}>{renderForm()}</Modal>
        
-       {/* Modal Paste Excel */}
        <Modal title="Dán dữ liệu từ Excel (Copy và Paste)" open={isPasteModalVisible} onCancel={() => setIsPasteModalVisible(false)} width={1000} footer={[<Button key="close" onClick={() => setIsPasteModalVisible(false)}>Hủy</Button>, <Button key="parse" onClick={handleProcessPaste} type="primary" ghost>Phân tích</Button>, <Button key="save" type="primary" onClick={handleSavePaste} disabled={previewData.length === 0}>Lưu ({previewData.length})</Button>]}>
           <div style={{marginBottom: 10, color: 'red', fontStyle: 'italic', background: '#fff1f0', padding: '10px', border: '1px solid #ffa39e', borderRadius: '4px'}}>
              <b>CHÚ Ý:</b> Copy cả dòng <b>TIÊU ĐỀ (Header)</b> trong Excel.
