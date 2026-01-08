@@ -113,7 +113,7 @@ const processImportLogic = async (workshop, rows) => {
         for (const item of rows) {
             const { lot_number, data } = item;
             
-            // Xóa các cột hệ thống và cột cập nhật
+            // Xóa các cột hệ thống
             delete data['STT']; delete data['stt']; 
             delete data['SKIP_UPDATE']; delete data['updated_at']; delete data['Ngày Cập Nhật'];
 
@@ -128,9 +128,9 @@ const processImportLogic = async (workshop, rows) => {
                 if (isSameIdentity(oldData, data)) {
                     const oldSig = normalizeData(oldData);
                     if (oldSig === newSig) { 
-                        skipped++; // Dữ liệu giống hệt -> Giữ nguyên
+                        skipped++; // Giống hệt -> Giữ nguyên
                     } else { 
-                        // Dữ liệu thay đổi -> Update -> cập nhật updated_at = NOW()
+                        // Khác -> Update -> Cập nhật thời gian
                         await client.query("UPDATE orders SET data = $1, updated_at = NOW() WHERE id = $2", [newDataFull, record.id]); 
                         updated++; 
                     }
@@ -190,7 +190,7 @@ app.patch('/api/orders/:id/status', async (req, res) => {
     catch (e) { res.status(500).json({ error: e.message }); }
 });
 
-// --- API EXPORT (ĐÃ CHỈNH LẠI THỨ TỰ CỘT CHO KHỚP GIAO DIỆN) ---
+// --- API EXPORT (ĐÃ CHỈNH VỊ TRÍ CỘT KHỚP UI) ---
 app.get('/api/export', async (req, res) => {
     try {
         const { workshop, status } = req.query;
@@ -206,12 +206,12 @@ app.get('/api/export', async (req, res) => {
         const wb = new ExcelJS.Workbook();
         const worksheet = wb.addWorksheet('Data');
 
-        // --- CẤU HÌNH THỨ TỰ CỘT CHÍNH XÁC (Ghi chú 2,3 ở cuối) ---
+        // --- CẤU HÌNH THỨ TỰ CỘT CHÍNH XÁC ---
         const COLUMNS_CONFIG = {
             'AA': [
                 "STT", 
                 "MÀU", 
-                "GHI CHÚ", // Ghi chú 1
+                "GHI CHÚ", // Ghi chú 1 nằm đây
                 "HỒI ẨM", 
                 "NGÀY XUỐNG ĐƠN", 
                 "SẢN PHẨM", 
@@ -251,13 +251,19 @@ app.get('/api/export', async (req, res) => {
         jsonData.forEach(item => Object.keys(item).forEach(k => allKeys.add(k)));
         
         const sortedKeys = Array.from(allKeys).sort((a, b) => {
-            const indexA = targetOrder.findIndex(key => key === a || key === a.toUpperCase());
-            const indexB = targetOrder.findIndex(key => key === b || key === b.toUpperCase());
+            // Tìm vị trí trong danh sách cấu hình
+            const indexA = targetOrder.indexOf(a); // Tìm key chính xác (ví dụ 'ghi chú')
+            const indexB = targetOrder.indexOf(b);
             
-            if (indexA !== -1 && indexB !== -1) return indexA - indexB;
-            if (indexA !== -1) return -1; 
-            if (indexB !== -1) return 1;
+            // Nếu không tìm thấy, thử tìm phiên bản in hoa (cho các cột khác)
+            const indexA_Final = indexA !== -1 ? indexA : targetOrder.indexOf(a.toUpperCase());
+            const indexB_Final = indexB !== -1 ? indexB : targetOrder.indexOf(b.toUpperCase());
+
+            if (indexA_Final !== -1 && indexB_Final !== -1) return indexA_Final - indexB_Final;
+            if (indexA_Final !== -1) return -1; 
+            if (indexB_Final !== -1) return 1;
             
+            // Các cột COT_ xuống cuối cùng
             const isCotA = a.startsWith('COT_');
             const isCotB = b.startsWith('COT_');
             if (isCotA && isCotB) return (parseInt(a.replace('COT_', '') || 0) - parseInt(b.replace('COT_', '') || 0));
@@ -295,7 +301,7 @@ app.get('/api/export', async (req, res) => {
     } catch (e) { console.error(e); res.status(500).send(e.message); }
 });
 
-// --- API IMPORT ĐA SHEET (BỎ QUA CỘT CẬP NHẬT) ---
+// --- API IMPORT ĐA SHEET (GIỮ NGUYÊN LOGIC BỎ CỘT NGÀY CẬP NHẬT) ---
 app.post('/api/import', upload.single('file'), async (req, res) => {
     if (!req.file) return res.status(400).send("No file.");
     const filePath = req.file.path;
@@ -350,7 +356,6 @@ app.post('/api/import', upload.single('file'), async (req, res) => {
                     else if (noteCounter === 3) name = 'ghi chú (1)';
                     else name = `GHI CHÚ (${noteCounter})`;
                 }
-                // --- BỎ QUA CỘT CẬP NHẬT ---
                 else if (upperName.includes('CẬP NHẬT') || upperName.includes('UPDATED')) {
                     name = 'SKIP_UPDATE';
                 }
