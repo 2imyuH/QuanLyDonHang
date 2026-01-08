@@ -30,9 +30,8 @@ const initPool = async () => {
             connectionString: connectionString,
             ssl: { rejectUnauthorized: false },
             connectionTimeoutMillis: 15000,
-            max: 20, // Tăng pool size
+            max: 20,
             idleTimeoutMillis: 30000,
-            connectionTimeoutMillis: 10000,
         });
         const client = await pool.connect();
         await client.query('SELECT NOW()');
@@ -58,7 +57,6 @@ const initDB = async () => {
         );
     `;
     
-    // TẠO INDEX ĐỂ TĂNG TỐC ĐỘ QUERY
     const createIndexes = `
         CREATE INDEX IF NOT EXISTS idx_orders_workshop_status ON orders(workshop, status);
         CREATE INDEX IF NOT EXISTS idx_orders_workshop_lot ON orders(workshop, lot_number);
@@ -89,7 +87,6 @@ const formatDateTimeVN = (isoString) => {
 
 const normalizeDateValue = (val) => {
     if (!val) return "";
-    // Excel Serial
     if (typeof val === 'number' && val > 25569 && val < 2958465) {
         const utc_days = Math.floor(val - 25569);
         const date_info = new Date(utc_days * 86400 * 1000);
@@ -98,7 +95,6 @@ const normalizeDateValue = (val) => {
         const day = String(date_info.getDate()).padStart(2, '0');
         return `${year}-${month}-${day}`;
     }
-    // String DD/MM/YYYY -> YYYY-MM-DD
     if (typeof val === 'string' && /^\d{1,2}\/\d{1,2}\/\d{4}/.test(val)) {
         const parts = val.split('/'); 
         if (parts.length === 3) {
@@ -126,7 +122,6 @@ const normalizeData = (obj) => {
     return JSON.stringify(cleanObj);
 };
 
-// --- LOGIC ĐỊNH DANH (IDENTITY CHECK) ---
 const isIdentityMatch = (dbData, excelData) => {
     const keys = ['SẢN PHẨM', 'MÀU', 'CHI SỐ'];
     for (const key of keys) {
@@ -142,7 +137,6 @@ const processImportLogic = async (workshop, rows) => {
     try {
         await client.query('BEGIN');
         
-        // Gom nhóm dữ liệu theo Số Lô
         const rowsByLot = {};
         for(const item of rows) {
             const lot = item.lot_number;
@@ -150,14 +144,12 @@ const processImportLogic = async (workshop, rows) => {
             rowsByLot[lot].push(item);
         }
 
-        // LẤY TẤT CẢ DỮ LIỆU CẦN THIẾT CHỈ 1 QUERY DUY NHẤT
         const allLots = Object.keys(rowsByLot);
         const res = await client.query(
             "SELECT id, lot_number, data FROM orders WHERE workshop = $1 AND lot_number = ANY($2)",
             [workshop, allLots]
         );
         
-        // TỔ CHỨC DỮ LIỆU THEO LÔ ĐỂ TRUY CẬP NHANH
         const dbRecordsByLot = {};
         for(const row of res.rows) {
             if(!dbRecordsByLot[row.lot_number]) dbRecordsByLot[row.lot_number] = [];
@@ -167,7 +159,6 @@ const processImportLogic = async (workshop, rows) => {
             });
         }
 
-        // CHUẨN BỊ BATCH QUERIES
         const insertBatch = [];
         const updateBatch = [];
 
@@ -186,7 +177,6 @@ const processImportLogic = async (workshop, rows) => {
                 
                 let matchFound = false;
                 
-                // 1. Tìm bản ghi GIỐNG HẾT 100%
                 for (const dbRecord of dbRecords) {
                     if (usedDbIds.has(dbRecord.id)) continue;
                     
@@ -201,7 +191,6 @@ const processImportLogic = async (workshop, rows) => {
                 
                 if (matchFound) continue;
 
-                // 2. Tìm bản ghi CÙNG ĐỊNH DANH
                 for (const dbRecord of dbRecords) {
                     if (usedDbIds.has(dbRecord.id)) continue;
                     
@@ -216,13 +205,11 @@ const processImportLogic = async (workshop, rows) => {
 
                 if (matchFound) continue;
 
-                // 3. Không tìm thấy khớp nào -> Insert mới
                 insertBatch.push({ workshop, lot, data: newDataFull });
                 inserted++;
             }
         }
         
-        // THỰC HIỆN BATCH UPDATE (NHANH HƠN NHIỀU)
         if (updateBatch.length > 0) {
             const updateQuery = `
                 UPDATE orders SET 
@@ -237,7 +224,6 @@ const processImportLogic = async (workshop, rows) => {
             ]);
         }
 
-        // THỰC HIỆN BATCH INSERT (NHANH HƠN NHIỀU)
         if (insertBatch.length > 0) {
             const insertQuery = `
                 INSERT INTO orders (workshop, lot_number, data, status)
@@ -263,7 +249,6 @@ const processImportLogic = async (workshop, rows) => {
 app.get('/api/orders', async (req, res) => {
     const { workshop, status } = req.query;
     try {
-        // SỬ DỤNG INDEX ĐÃ TẠO
         const result = await pool.query(
             `SELECT * FROM orders WHERE workshop = $1 AND status = $2 ORDER BY id ASC`, 
             [workshop || 'AA', status || 'ACTIVE']
@@ -317,7 +302,7 @@ app.patch('/api/orders/:id/status', async (req, res) => {
     catch (e) { res.status(500).json({ error: e.message }); }
 });
 
-// --- API EXPORT ---
+// --- API EXPORT (ĐÃ SỬA THỨ TỰ CỘT) ---
 app.get('/api/export', async (req, res) => {
     try {
         const { workshop, status } = req.query;
@@ -327,70 +312,157 @@ app.get('/api/export', async (req, res) => {
             [currentWorkshop, status]
         );
         
+        // XÓA CÁC KEY TRÙNG LẶP VÀ CHUẨN BỊ DATA
         const jsonData = result.rows.map((r, index) => {
             const parsed = JSON.parse(r.data || '{}');
-            delete parsed['STT']; delete parsed['stt'];
-            return { "STT": index + 1, "Số LÔ": r.lot_number, ...parsed };
+            // Xóa các key không cần thiết và trùng lặp
+            delete parsed['STT'];
+            delete parsed['stt'];
+            delete parsed['Số LÔ'];
+            delete parsed['SỐ LÔ'];
+            
+            // Tạo object mới với STT đầu tiên
+            return { 
+                "STT": index + 1,
+                ...parsed,
+                "Số LÔ": r.lot_number  // Đặt Số Lô ở cuối
+            };
         });
 
         const wb = new ExcelJS.Workbook();
         const worksheet = wb.addWorksheet('Data');
 
-        // THỨ TỰ CỘT GIỐNG GIAO DIỆN
-        const COLUMNS_CONFIG = {
+        // THỨ TỰ CỘT THEO GIAO DIỆN
+        const COLUMNS_ORDER = {
             'AA': ["STT", "MÀU", "GHI CHÚ", "HỒI ẨM", "NGÀY XUỐNG ĐƠN", "SẢN PHẨM", "Số LÔ", "CHI SỐ", "SỐ LƯỢNG", "BẮT ĐẦU", "KẾT THÚC", "THAY ĐỔI", "SO MẪU", "ghi chú", "ghi chú (1)"],
             'AB': ["STT", "MÀU", "GHI CHÚ", "HỒI ẨM", "NGÀY XUỐNG ĐƠN", "SẢN PHẨM", "Số LÔ", "CHI SỐ", "SỐ LƯỢNG", "BẮT ĐẦU", "KẾT THÚC", "THAY ĐỔI", "SO MẪU", "ghi chú", "ghi chú (1)"],
             'OE': ["STT", "MÀU", "GHI CHÚ", "HỒI ẨM", "NGÀY XUỐNG ĐƠN", "SẢN PHẨM", "Số LÔ", "CHI SỐ", "SỐ LƯỢNG", "BẮT ĐẦU", "KẾT THÚC", "FU CUNG CÚI", "THỰC TẾ HOÀN THÀNH", "SO MẪU", "ghi chú", "ghi chú (1)"]
         };
-        const targetOrder = COLUMNS_CONFIG[currentWorkshop] || COLUMNS_CONFIG['AA'];
+        const targetOrder = COLUMNS_ORDER[currentWorkshop] || COLUMNS_ORDER['AA'];
 
+        // MAP HEADER HIỂN THỊ
         const HEADER_MAP = {
-            "GHI CHÚ": "Ghi chú 1", "ghi chú": "Ghi chú 2", "ghi chú (1)": "Ghi chú 3",
-            "NGÀY XUỐNG ĐƠN": "Ngày xuống đơn", "SỐ LƯỢNG": "Số Lượng",
-            "BẮT ĐẦU": "Bắt Đầu", "KẾT THÚC": "Kết Thúc", "Số LÔ": "Số Lô", "SẢN PHẨM": "Sản Phẩm",
-            "CHI SỐ": "Chi Số", "MÀU": "Màu", "THAY ĐỔI": "Thay Đổi", "SO MẪU": "So Mẫu", "HỒI ẨM": "Hồi ẩm",
-            "FU CUNG CÚI": "Fu Cung Cúi", "THỰC TẾ HOÀN THÀNH": "Thực Tế"
+            "GHI CHÚ": "Ghi chú 1",
+            "ghi chú": "Ghi chú 2",
+            "ghi chú (1)": "Ghi chú 3",
+            "NGÀY XUỐNG ĐƠN": "Ngày xuống đơn",
+            "SỐ LƯỢNG": "Số Lượng",
+            "BẮT ĐẦU": "Bắt Đầu",
+            "KẾT THÚC": "Kết Thúc",
+            "Số LÔ": "Số Lô",
+            "SẢN PHẨM": "Sản Phẩm",
+            "CHI SỐ": "Chi Số",
+            "MÀU": "Màu",
+            "THAY ĐỔI": "Thay Đổi",
+            "SO MẪU": "So Màu",
+            "HỒI ẨM": "Hồi ẩm",
+            "FU CUNG CÚI": "Fu Cung Cúi",
+            "THỰC TẾ HOÀN THÀNH": "Thực Tế"
         };
 
-        let allKeys = new Set();
-        jsonData.forEach(item => Object.keys(item).forEach(k => allKeys.add(k)));
-        
-        const sortedKeys = Array.from(allKeys).sort((a, b) => {
-            const indexA = targetOrder.findIndex(key => key === a || key === a.toUpperCase());
-            const indexB = targetOrder.findIndex(key => key === b || key === b.toUpperCase());
-            if (indexA !== -1 && indexB !== -1) return indexA - indexB;
-            if (indexA !== -1) return -1; if (indexB !== -1) return 1;
-            const isCotA = a.startsWith('COT_'); const isCotB = b.startsWith('COT_');
-            if (isCotA && isCotB) return (parseInt(a.replace('COT_', '') || 0) - parseInt(b.replace('COT_', '') || 0));
-            if (isCotA) return 1; if (isCotB) return -1;
-            return a.localeCompare(b);
+        // LẤY TẤT CẢ KEY TỪ DATA
+        const allKeysSet = new Set();
+        jsonData.forEach(item => {
+            Object.keys(item).forEach(k => allKeysSet.add(k));
         });
-
-        worksheet.columns = sortedKeys.map(key => ({ header: HEADER_MAP[key] || key, key: key }));
-        worksheet.addRows(jsonData);
-
-        const fontStyle = { name: 'Times New Roman', size: 12 };
-        const borderStyle = { top: { style: 'thin' }, left: { style: 'thin' }, bottom: { style: 'thin' }, right: { style: 'thin' } };
-        const alignStyle = { vertical: 'middle', horizontal: 'center', wrapText: true }; 
-
-        worksheet.eachRow((row, rowNumber) => {
-            row.eachCell((cell) => { cell.font = fontStyle; cell.border = borderStyle; cell.alignment = alignStyle; });
-            if (rowNumber === 1) { 
-                row.height = 30;
-                row.eachCell((cell) => { cell.font = { ...fontStyle, bold: true, color: { argb: 'FFFFFFFF' } }; cell.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FF1F4E78' } }; cell.alignment = { ...alignStyle, horizontal: 'center' }; });
+        
+        // SẮP XẾP KEY THEO THỨ TỰ
+        const sortedKeys = [];
+        
+        // 1. Thêm các cột theo thứ tự chuẩn
+        targetOrder.forEach(orderedKey => {
+            if (allKeysSet.has(orderedKey)) {
+                sortedKeys.push(orderedKey);
+                allKeysSet.delete(orderedKey);
             }
         });
-        worksheet.columns.forEach(column => { 
-            let maxLength = 0; if (column.header) maxLength = column.header.length; 
-            column.eachCell({ includeEmpty: true }, (cell, rowNumber) => { if (rowNumber > 50) return; const val = cell.value ? cell.value.toString() : ""; if (val.length > maxLength) maxLength = val.length; }); 
-            column.width = Math.min(maxLength + 5, 60); 
+        
+        // 2. Thêm các cột động COT_
+        const dynamicCols = Array.from(allKeysSet)
+            .filter(k => k.startsWith('COT_'))
+            .sort((a, b) => {
+                const numA = parseInt(a.replace('COT_', '') || 0);
+                const numB = parseInt(b.replace('COT_', '') || 0);
+                return numA - numB;
+            });
+        sortedKeys.push(...dynamicCols);
+        dynamicCols.forEach(k => allKeysSet.delete(k));
+        
+        // 3. Thêm các cột còn lại
+        const remainingCols = Array.from(allKeysSet).sort();
+        sortedKeys.push(...remainingCols);
+
+        // TẠO CỘT EXCEL
+        worksheet.columns = sortedKeys.map(key => ({
+            header: HEADER_MAP[key] || key,
+            key: key
+        }));
+        
+        worksheet.addRows(jsonData);
+
+        // ĐỊNH DẠNG EXCEL
+        const fontStyle = { name: 'Times New Roman', size: 12 };
+        const borderStyle = {
+            top: { style: 'thin' },
+            left: { style: 'thin' },
+            bottom: { style: 'thin' },
+            right: { style: 'thin' }
+        };
+        const alignStyle = {
+            vertical: 'middle',
+            horizontal: 'center',
+            wrapText: true
+        };
+
+        worksheet.eachRow((row, rowNumber) => {
+            row.eachCell((cell) => {
+                cell.font = fontStyle;
+                cell.border = borderStyle;
+                cell.alignment = alignStyle;
+            });
+            
+            if (rowNumber === 1) {
+                row.height = 30;
+                row.eachCell((cell) => {
+                    cell.font = {
+                        ...fontStyle,
+                        bold: true,
+                        color: { argb: 'FFFFFFFF' }
+                    };
+                    cell.fill = {
+                        type: 'pattern',
+                        pattern: 'solid',
+                        fgColor: { argb: 'FF1F4E78' }
+                    };
+                    cell.alignment = {
+                        ...alignStyle,
+                        horizontal: 'center'
+                    };
+                });
+            }
+        });
+
+        worksheet.columns.forEach(column => {
+            let maxLength = 0;
+            if (column.header) maxLength = column.header.length;
+            
+            column.eachCell({ includeEmpty: true }, (cell, rowNumber) => {
+                if (rowNumber > 50) return;
+                const val = cell.value ? cell.value.toString() : "";
+                if (val.length > maxLength) maxLength = val.length;
+            });
+            
+            column.width = Math.min(maxLength + 5, 60);
         });
 
         const buffer = await wb.xlsx.writeBuffer();
         res.setHeader('Content-Disposition', `attachment; filename="${workshop}_Export.xlsx"`);
         res.setHeader('Content-Type', 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet');
         res.send(buffer);
-    } catch (e) { console.error(e); res.status(500).send(e.message); }
+    } catch (e) {
+        console.error(e);
+        res.status(500).send(e.message);
+    }
 });
 
 // --- API IMPORT ĐA SHEET ---
