@@ -121,9 +121,37 @@ const initDB = async () => {
     } catch (err) { 
         console.error("❌ Lỗi tạo bảng:", err); 
     }
+    const createBackupTableQuery = `
+        CREATE TABLE IF NOT EXISTS order_backups (
+            id SERIAL PRIMARY KEY,
+            original_order_id INTEGER,
+            action_type TEXT, -- 'UPDATE', 'DELETE', 'IMPORT_OVERWRITE'
+            old_data TEXT,    -- Dữ liệu cũ (JSON)
+            lot_number TEXT,
+            workshop TEXT,
+            backup_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+        );
+    `;
+    try { await pool.query(createBackupTableQuery); console.log("✅ Đã khởi tạo hệ thống Backup."); } 
+    catch (err) { console.error("❌ Lỗi tạo bảng Backup:", err); }
 };
-
 // --- HELPER: FORMAT & CHUẨN HÓA DỮ LIỆU ---
+const createBackup = async (client, orderId, actionType) => {
+    try {
+        const res = await client.query("SELECT * FROM orders WHERE id = $1", [orderId]);
+        if (res.rows.length === 0) return;
+
+        const record = res.rows[0];
+        await client.query(
+            `INSERT INTO order_backups (original_order_id, action_type, old_data, lot_number, workshop)
+             VALUES ($1, $2, $3, $4, $5)`,
+            [record.id, actionType, record.data, record.lot_number, record.workshop]
+        );
+        console.log(`🛡️ Backup created: ${record.lot_number} [${actionType}]`);
+    } catch (e) {
+        console.error("⚠️ Backup failed (Non-blocking):", e.message);
+    }
+};
 const formatDateTimeVN = (isoString) => {
     if (!isoString) return "";
     const d = new Date(isoString);
@@ -659,7 +687,32 @@ app.get('/health', (req, res) => {
         waiting: pool.waitingCount
     }); 
 });
+app.get('/api/backups', async (req, res) => {
+    const { limit = 50, workshop } = req.query;
+    try {
+        let queryText = `SELECT * FROM order_backups`;
+        const params = [limit];
+        
+        if (workshop) {
+            queryText += ` WHERE workshop = $2`;
+            params.push(workshop);
+        }
+        
+        queryText += ` ORDER BY backup_at DESC LIMIT $1`;
 
+        const result = await pool.query(queryText, params);
+        
+        const history = result.rows.map(row => ({
+            ...row,
+            old_data: JSON.parse(row.old_data || '{}'),
+            backup_at: new Date(row.backup_at).toLocaleString('vi-VN')
+        }));
+        
+        res.json(history);
+    } catch (e) {
+        res.status(500).json({ error: e.message });
+    }
+});
 const PORT = process.env.PORT || 3001;
 initPool().then(() => { 
     app.listen(PORT, () => console.log(`🚀 Server running on port ${PORT}`)); 
